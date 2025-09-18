@@ -11,6 +11,7 @@ fn main() {
 
     // Check if the version string contains "-nightly"
     if version.contains("-nightly") {
+        println!("cargo:rustc-cfg=feature=\"simd\"");
         println!("cargo:rustc-cfg=nightly");
     }
 }
