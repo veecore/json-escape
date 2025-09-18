@@ -1,0 +1,42 @@
+[package]
+name = "json-escape"
+description = "A high-performance, `no_std` library for streaming JSON string escaping and unescaping. Process large JSON strings with zero-copy slicing and no intermediate allocations, ideal for parsers and memory-constrained environments."
+version = "0.1.0"
+edition = "2024"
+authors = ["Victor <victorayo206@example.com>"]
+rust-version = "1.85"
+license = "MIT"
+homepage = "https://github.com/veecore/json-escape"
+documentation = "https://docs.rs/json-escape/"
+readme = "README.md"
+keywords = [
+	"json",
+	"escape",
+	"unescape",
+	"serde",
+	"zero-copy"
+]
+exclude = [
+    "/.github",
+    "/benches",
+]
+
+[dependencies]
+memchr = "2.7.5"
+
+[features]
+alloc = []
+default = ["std"]
+std = ["alloc"]
+# This feature is enabled automatically by build.rs when using a nightly toolchain.
+# You can also enable it manually with `cargo build --features simd`.
+simd = []
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = {version = "1.0", features = ["raw_value"]}
+
+[[bench]]
+name = "escape_unescape_benches"
+harness = false
