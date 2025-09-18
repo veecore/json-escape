@@ -52,7 +52,7 @@
 //! ```
 #![no_std]
 #![deny(missing_docs)]
-#![cfg_attr(nightly, feature(portable_simd))]
+#![cfg_attr(all(feature = "simd", nightly), feature(portable_simd))]
 
 #[cfg(any(test, feature = "std"))]
 extern crate std;
@@ -1376,8 +1376,8 @@ const ESCAPE_DECISION_TABLE: [u8; 256] = {
     table
 };
 
-// This is the SIMD version, compiled only when on nightly build.
-#[cfg(nightly)]
+// This is the SIMD version, compiled only when the "simd" feature is enabled on nightly build.
+#[cfg(all(feature = "simd", nightly))]
 #[inline]
 fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};

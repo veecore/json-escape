@@ -28,6 +28,9 @@ memchr = "2.7.5"
 alloc = []
 default = ["std"]
 std = ["alloc"]
+# This feature is enabled automatically by build.rs when using a nightly toolchain.
+# You can also enable it manually with `cargo build --features simd`.
+simd = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
