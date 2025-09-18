@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use json_escape::{escape_str, unescape, unescape_quoted};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -16,7 +16,6 @@ const DENSE_ESCAPES: &str = r#""\"\\\/\b\f\n\r\t""#;
 // Raw and escaped versions of a string focused on Unicode escapes, including surrogate pairs.
 const UNICODE_ESCAPES_RAW: &str = r#"Unicode test: éàçüö. Emoji: 😀. More symbols: ❤️✅."#;
 const UNICODE_ESCAPES_ESCAPED: &str = r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#;
-
 
 /// Benchmarks for the `escape_str` functionality.
 fn escape_benchmarks(c: &mut Criterion) {
@@ -94,33 +93,45 @@ fn unescape_benchmarks(c: &mut Criterion) {
     {
         // 1. Pure iterator performance (no allocation).
         // Measures the overhead of the unescaping and error-handling logic.
-        group.bench_with_input(BenchmarkId::new("Iterate Only", id), input_escaped, |b, &i| {
-            b.iter(|| {
-                for r in unescape(i) {
-                    let _ = black_box(r);
-                }
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("Iterate Only", id),
+            input_escaped,
+            |b, &i| {
+                b.iter(|| {
+                    for r in unescape(i) {
+                        let _ = black_box(r);
+                    }
+                })
+            },
+        );
 
         // 2. Reading into a Vec via the `std::io::Read` implementation.
         // Measures the performance of streaming unescaped data.
-        group.bench_with_input(BenchmarkId::new("Read to Vec", id), input_escaped, |b, &i| {
-            b.iter(|| {
-                let mut reader = unescape(i);
-                let mut buf = Vec::with_capacity(i.len());
-                reader.read_to_end(&mut buf).unwrap();
-                black_box(buf);
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("Read to Vec", id),
+            input_escaped,
+            |b, &i| {
+                b.iter(|| {
+                    let mut reader = unescape(i);
+                    let mut buf = Vec::with_capacity(i.len());
+                    reader.read_to_end(&mut buf).unwrap();
+                    black_box(buf);
+                })
+            },
+        );
 
         // 3. Decoding to a UTF-8 String.
         // A primary use case that combines unescaping, allocation, and UTF-8 validation.
-        group.bench_with_input(BenchmarkId::new("Decode UTF-8", id), input_escaped, |b, &i| {
-            b.iter(|| {
-                let s = unescape(i).decode_utf8().unwrap();
-                black_box(s);
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("Decode UTF-8", id),
+            input_escaped,
+            |b, &i| {
+                b.iter(|| {
+                    let s = unescape(i).decode_utf8().unwrap();
+                    black_box(s);
+                })
+            },
+        );
     }
 
     group.finish();
@@ -152,7 +163,7 @@ struct InnerPayload {
 fn generate_nested_json_string(size: usize) -> String {
     let mut metadata = HashMap::new();
     for i in 0..size / 2 {
-        metadata.insert(format!("key_{}", i), format!("value_{}", i));
+        metadata.insert(format!("key_{i}"), format!("value_{i}"));
     }
 
     let inner = InnerPayload {
@@ -173,7 +184,6 @@ fn generate_nested_json_string(size: usize) -> String {
 
     serde_json::to_string(&outer_json).unwrap()
 }
-
 
 /// Benchmarks parsing a JSON string embedded within another JSON object.
 fn nested_json_benchmarks(c: &mut Criterion) {
@@ -249,28 +259,35 @@ fn comparison_benchmarks(c: &mut Criterion) {
     .iter()
     {
         // Escaping comparison
-        group.bench_with_input(BenchmarkId::new("escape/serde_json::to_string", id), input, |b, &i| {
-            b.iter(|| {
-                // serde_json::to_string wraps the string in quotes and escapes it.
-                black_box(serde_json::to_string(i).unwrap());
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("escape/serde_json::to_string", id),
+            input,
+            |b, &i| {
+                b.iter(|| {
+                    // serde_json::to_string wraps the string in quotes and escapes it.
+                    black_box(serde_json::to_string(i).unwrap());
+                })
+            },
+        );
 
         // Unescaping comparison
         // We must first create a valid JSON string literal for serde_json to parse.
         let json_literal = format!(r#""{}""#, escape_str(input).collect::<String>());
 
-        group.bench_with_input(BenchmarkId::new("unescape/serde_json::from_str", id), &json_literal, |b, i| {
-            b.iter(|| {
-                // serde_json::from_str parses the quoted string and unescapes it.
-                let s: String = serde_json::from_str(i).unwrap();
-                black_box(s);
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("unescape/serde_json::from_str", id),
+            &json_literal,
+            |b, i| {
+                b.iter(|| {
+                    // serde_json::from_str parses the quoted string and unescapes it.
+                    let s: String = serde_json::from_str(i).unwrap();
+                    black_box(s);
+                })
+            },
+        );
     }
     group.finish();
 }
-
 
 // Register the benchmark groups.
 criterion_group!(

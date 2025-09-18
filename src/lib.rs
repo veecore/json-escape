@@ -52,8 +52,7 @@
 //! ```
 #![no_std]
 #![deny(missing_docs)]
-
-#![cfg_attr(feature = "simd", feature(portable_simd))]
+#![cfg_attr(nightly, feature(portable_simd))]
 
 #[cfg(any(test, feature = "std"))]
 extern crate std;
@@ -1377,8 +1376,8 @@ const ESCAPE_DECISION_TABLE: [u8; 256] = {
     table
 };
 
-// This is the SIMD version, compiled only when the "simd" feature is enabled.
-#[cfg(feature = "simd")]
+// This is the SIMD version, compiled only when on nightly build.
+#[cfg(nightly)]
 #[inline]
 fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};
@@ -1428,76 +1427,8 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-#[cfg(all(not(feature = "simd"), target_arch = "x86_64"))]
-#[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    // This is the stable Rust path using explicit CPU intrinsics.
-    // It's guarded by cfg flags to only compile on x86_64 with the simd feature.
-    use std::arch::x86_64::*;
-
-    let mut i = 0;
-    const LANES: usize = 16; // SSE2 works on 128-bit registers, which is 16 bytes.
-
-    // On x86_64, we can tell the compiler to use SSE2 features in this specific function.
-    // This is safe because we've already checked the target architecture.
-    #[target_feature(enable = "sse2")]
-    unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
-        // Load 16 bytes of data from the slice. `_mm_loadu` handles unaligned memory.
-        let chunk = unsafe { _mm_loadu_si128(bytes.as_ptr().add(i) as *const _) };
-
-        // Create vectors with the character to check for in all 16 lanes.
-        // `_mm_set1_epi8` is the intrinsic equivalent of `Simd::splat`.
-        // Note: The comparison for `< ' '` works correctly with a signed comparison
-        // because all relevant characters (0-31) are positive.
-        let space_v = _mm_set1_epi8(b' ' as i8);
-        let quote_v = _mm_set1_epi8(b'"' as i8);
-        let slash_v = _mm_set1_epi8(b'\\' as i8);
-
-        // Perform the three comparisons in parallel.
-        let lt_space_mask = _mm_cmplt_epi8(chunk, space_v); // Signed less-than
-        let eq_quote_mask = _mm_cmpeq_epi8(chunk, quote_v);
-        let eq_slash_mask = _mm_cmpeq_epi8(chunk, slash_v);
-
-        // Combine the results. A lane is all 1s if any condition was true.
-        let combined_mask = _mm_or_si128(lt_space_mask, _mm_or_si128(eq_quote_mask, eq_slash_mask));
-
-        // Create a 16-bit integer bitmask from the most significant bit of each byte lane.
-        // This is the fastest way to find if any lane matched.
-        let mask = _mm_movemask_epi8(combined_mask);
-
-        // If the mask is not zero, at least one byte matched.
-        if mask != 0 {
-            // `trailing_zeros` finds the index of the first `1` bit, which
-            // corresponds to the first matching byte in our chunk.
-            Some(i + mask.trailing_zeros() as usize)
-        } else {
-            None
-        }
-    }
-
-    // Main loop
-    while i + LANES <= bytes.len() {
-        if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
-            return Some(result);
-        }
-        i += LANES;
-    }
-
-    // Handle the remainder with the fast scalar lookup.
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
-
-    None
-}
-
-// A fallback for non-x86_64 architectures and when SIMD feature is off.
-#[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+// A fallback for when SIMD feature is off.
+#[cfg(not(nightly))]
 #[inline]
 fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     bytes
