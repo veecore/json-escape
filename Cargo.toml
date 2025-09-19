@@ -1,7 +1,7 @@
 [package]
 name = "json-escape"
 description = "A high-performance, `no_std` library for streaming JSON string escaping and unescaping. Process large JSON strings with zero-copy slicing and no intermediate allocations, ideal for parsers and memory-constrained environments."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Victor <victorayo206@example.com>"]
 rust-version = "1.85"

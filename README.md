@@ -131,7 +131,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-json-escape = "0.1.0"
+json-escape = "0.1.1"
 ```
 
 ### Feature Flags
