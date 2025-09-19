@@ -572,9 +572,6 @@ impl<'a> Unescape<'a> {
         Ok(acc)
     }
 
-    // TODO: Have a #[inline(always)] handle_escape(bytes: &mut slice::Iter<'a, u8>) -> Result<&'static [u8], UnescapeError>
-    // Which will now call handle_unicode_escape and handle the rest
-
     /// Parses a unicode escape sequence `\uXXXX` which may be a surrogate pair.
     /// The iterator `bytes` must be positioned *after* the `\u`.
     ///
