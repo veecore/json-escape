@@ -387,27 +387,121 @@ pub fn unescape_quoted<I: AsRef<[u8]> + ?Sized>(input: &I) -> Unescape<'_> {
 /// This struct is created by the [`unescape`] function. It implements an [`Iterator`]
 /// that yields `Result<&'a [u8], UnescapeError>`, lazily decoding the input.
 ///
-/// The iterator's output chunks are either:
+/// The iterator's output chunks are one of the following:
 /// - **`Ok(&'a [u8])`**: A borrowed slice of the original input for a sequence of non-escaped bytes.
-/// - **`Ok(&'static [u8])`**: A single-byte slice for a decoded escape sequence (e.g., `\n` becomes a slice containing `0x0A`). For `\uXXXX` sequences, it yields a series of single-byte slices representing the UTF-8 encoding of the character.
-/// - **`Err(UnescapeError)`**: An error indicating an invalid escape sequence, which halts further iteration.
+/// - **`Ok(&'static [u8])`**: A single-byte slice for a decoded escape sequence (e.g., `\n` becomes a slice containing `0x0A`).
+///   For `\uXXXX` sequences, it yields a series of single-byte slices representing the UTF-8 encoding of the character.
+/// - **`Err(UnescapeError)`**: An error indicating an invalid escape sequence, which halts further iteration as described below.
 ///
-/// Because it operates on bytes, you can use helper methods like [`Unescape::decode_utf8`] or [`Unescape::decode_utf8_lossy`] to convert the final result into a string.
+/// Because the iterator operates on bytes, you can use helper methods like
+/// [`Unescape::decode_utf8`] or [`Unescape::decode_utf8_lossy`] to convert the
+/// final result into a string.
 ///
-/// ### Implemented Traits
-/// - **`Iterator<Item = Result<&'a [u8], UnescapeError>>`**: The core trait for processing the unescaped byte chunks.
-/// - **`std::io::Read`** (requires `std` feature): Lets you use the unescaper as a standard reader, perfect for integrating with other I/O APIs.
+/// # Error Handling
+///
+/// When the iterator encounters an invalid or incomplete escape, it returns an
+/// `Err(UnescapeError)` describing the problem. The iterator then remains in an
+/// **error state**: subsequent calls to `next()` will continue to return that same
+/// error (i.e., the error is idempotent) and the iterator will not produce further
+/// `Ok` chunks. This makes the behavior deterministic for callers that check the
+/// first error and then stop.
+///
+/// Errors are classified by the precise condition encountered:
+/// - **`InvalidEscape`**: The escape sequence uses an unknown escape character (e.g., `\q`).
+/// - **`InvalidHex`**: A `\u` escape contains a non-hex character where a hex
+///   digit was expected (e.g., `\uZ`).
+/// - **`UnexpectedEof`**: The input ended before a complete escape sequence could be
+///   read. This is used when there isn't enough input yet to decide whether the
+///   sequence would be valid (for instance, an incomplete `\u` or a truncated
+///   surrogate pair).
+/// - **`LoneSurrogate`**: A complete `\uXXXX` was read, and it encodes a *high*
+///   surrogate, but the following bytes definitively do not form a valid low
+///   surrogate escape (for example, the next character is a space or any
+///   non-`\u` character).
+///
+/// The difference between `UnexpectedEof` and `LoneSurrogate` is important:
+/// - `UnexpectedEof` means **we couldn't decide** because the input ended too early.
+/// - `LoneSurrogate` means **we did decide**—we saw a full `\uXXXX` high surrogate,
+///   and the following input proves a pair will not follow.
+///
+/// #### Concrete examples
+///
+/// 1) A high surrogate followed by other data (not a `\u` low-surrogate) → `LoneSurrogate`:
+///
+/// ```rust
+/// use json_escape::{unescape, UnescapeErrorKind, LoneSurrogateError};
+///
+/// let mut iter = unescape(r"\uD83D more data");
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: 0xD83D, .. })));
+///
+/// // Subsequent calls return the same error (iterator remains in the same error state).
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: 0xD83D, .. })));
+/// ```
+///
+/// 2) An invalid escape character → `InvalidEscape`:
+///
+/// ```rust
+/// use json_escape::{unescape, UnescapeErrorKind, InvalidEscapeError};
+///
+/// let mut iter = unescape(r"\q"); // `\q` is not a defined escape
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::InvalidEscape(InvalidEscapeError { found: b'q', .. })));
+/// ```
+///
+/// 3) A malformed `\u` with a non-hex character → `InvalidHex`:
+///
+/// ```rust
+/// use json_escape::{unescape, UnescapeErrorKind, InvalidHexError};
+///
+/// let mut iter = unescape(r"\uZ");
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::InvalidHex(InvalidHexError { found: b'Z', .. })));
+/// ```
+///
+/// 4) Truncated / incomplete input ⇒ `UnexpectedEof`:
+///
+/// ```rust
+/// use json_escape::{unescape, UnescapeErrorKind};
+///
+/// // a) truncated after the first \uXXXX (no following bytes yet)
+/// let mut iter = unescape(r"\uD83D");
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::UnexpectedEof));
+///
+/// // b) starts a second \u but is truncated before hex digits
+/// let mut iter = unescape(r"\uD83D\u");
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::UnexpectedEof));
+///
+/// // c) a lone backslash at end of input
+/// let mut iter = unescape("\\");
+/// let err = iter.next().unwrap().unwrap_err();
+/// assert!(matches!(err.kind(), UnescapeErrorKind::UnexpectedEof));
+/// ```
+///
+/// **Note**: This behavior intentionally mirrors common JSON parsers (e.g.,
+/// `serde_json`, Go's `encoding/json`) for the EOF vs. semantic error distinction.
+///
+/// # Implemented Traits and Usage
+///
+/// - **`Iterator<Item = Result<&'a [u8], UnescapeError>>`**: The core trait for
+///   processing the unescaped byte chunks.
+/// - **`std::io::Read`** (requires `std` feature): Lets you use the unescaper as a
+///   standard reader, perfect for integrating with other I/O APIs.
+/// - **`TryFrom<Unescape<'a>> for Cow<'a, [u8]>`** (requires `alloc` feature): An
+///   efficient way to collect the unescaped bytes, propagating any errors.
 /// - **`Clone`**, **`Debug`**: Standard utility traits.
 /// - **`PartialEq<B: AsRef<[u8]>>`**: Compares the fully unescaped output with a byte slice.
-/// - **`TryFrom<Unescape<'a>> for Cow<'a, [u8]>`** (requires `alloc` feature): An efficient way to collect the unescaped bytes, propagating any errors.
 ///
-/// ### Reading Unescaped Bytes
+/// ## Reading Unescaped Bytes
 ///
-/// With the `std` feature, `Unescape` can be used as any other `std::io::Read` source.
-/// This is ideal for streaming and decoding large JSON string contents without
-/// buffering the entire result in memory first.
+/// With the `std` feature, `Unescape` can be used as any other `std::io::Read`
+/// source. This is ideal for streaming and decoding large JSON string contents
+/// without buffering the entire result in memory first.
 ///
-/// ```
+/// ```rust
 /// # #[cfg(feature = "std")] {
 /// use json_escape::unescape;
 /// use std::io::Read;
@@ -426,7 +520,7 @@ pub fn unescape_quoted<I: AsRef<[u8]> + ?Sized>(input: &I) -> Unescape<'_> {
 pub struct Unescape<'a> {
     // iterator over the input bytes (we use slice::Iter to clone/peek where necessary
     // without worrying too much about bookkeeping)
-    bytes: slice::Iter<'a, u8>,
+    pub(crate) bytes: slice::Iter<'a, u8>,
 
     // scratch buffer for encoded UTF-8 bytes from a \uXXXX (or surrogate pair)
     unicode: [u8; 4],
@@ -478,58 +572,75 @@ impl<'a> Unescape<'a> {
         Ok(acc)
     }
 
+    // TODO: Have a #[inline(always)] handle_escape(bytes: &mut slice::Iter<'a, u8>) -> Result<&'static [u8], UnescapeError>
+    // Which will now call handle_unicode_escape and handle the rest
+
+    /// Parses a unicode escape sequence `\uXXXX` which may be a surrogate pair.
+    /// The iterator `bytes` must be positioned *after* the `\u`.
+    ///
+    /// NOTE: Doesn't preserve the state of the iterator on error
     #[inline(always)]
     fn handle_unicode_escape(bytes: &mut slice::Iter<'a, u8>) -> Result<char, UnescapeError> {
-        // We need to parse 4 hex digits from the iterator. But because
-        // `bytes` implements `Clone`, we can clone it to peek ahead
-        // in order to support surrogate pair detection without losing
-        // the original iterator state on failure.
-        let mut cloned_iter = bytes.clone();
-        // parse first 4 hex from cloned_iter to leave original untouched until we commit
+        // Parse first 4 hex digits (\uXXXX)
         //
         // The iterator starts *after* '\u'. The first hex digit is at offset 2 from '\'.
-        let first = Self::parse_hex4(&mut cloned_iter, 2)?;
+        let first = Self::parse_hex4(bytes, 2)?;
 
-        // If it's a high surrogate, check for a following `\uXXXX` low surrogate
+        // High surrogate → must be followed by another \uXXXX low surrogate
         if (0xD800..=0xDBFF).contains(&first) {
-            // cloned_iter currently points after the 4 hex digits; check next two chars
-            if cloned_iter.next() == Some(&b'\\') && cloned_iter.next() == Some(&b'u') {
-                // try parse low
-                //
-                // The first hex digit of the second escape is at offset 8.
-                // (\uXXXX\u -> 8 chars)
-                if let Ok(low) = Self::parse_hex4(&mut cloned_iter, 8) {
-                    if (0xDC00..=0xDFFF).contains(&low) {
-                        // success: we must advance the real iterator
-                        *bytes = cloned_iter;
-                        let high_t = first as u32;
-                        let low_t = low as u32;
-                        let code = 0x10000 + (((high_t - 0xD800) << 10) | (low_t - 0xDC00));
-                        return Ok(char::from_u32(code).expect(
-                            "valid surrogate pair math should always produce a valid char",
-                        ));
+            match (bytes.next(), bytes.next()) {
+                (Some(b'\\'), Some(b'u')) => {
+                    // Try parsing the low surrogate
+                    //
+                    // The first hex digit of the second escape is at offset 8.
+                    // (\uXXXX\u -> 8 chars)
+                    match Self::parse_hex4(bytes, 8) {
+                        Ok(low) if (0xDC00..=0xDFFF).contains(&low) => {
+                            let high_t = first as u32;
+                            let low_t = low as u32;
+                            let code = 0x10000 + (((high_t - 0xD800) << 10) | (low_t - 0xDC00));
+                            return Ok(char::from_u32(code).expect(
+                                "valid surrogate pair math should always produce a valid char",
+                            ));
+                        }
+                        Ok(_) => {
+                            // Got a full escape but not a low surrogate → Lone surrogate
+                            return Err(UnescapeError {
+                                kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError {
+                                    surrogate: first,
+                                }),
+                                offset: 6,
+                            });
+                        }
+                        Err(err) => {
+                            // parse_hex4 failed (e.g. ran out of hex digits)
+                            return Err(err);
+                        }
                     }
                 }
-                // If parse_hex4 failed, the error would have been returned.
-                // If it succeeded but the value wasn't a low surrogate, we fallthrough.
+                // EOF before even seeing '\' or 'u' → UnexpectedEof
+                (None, _) | (_, None) => {
+                    return Err(UnescapeError {
+                        kind: UnescapeErrorKind::UnexpectedEof,
+                        offset: 6,
+                    });
+                }
+                // Something else after high surrogate → LoneSurrogate
+                _ => {
+                    return Err(UnescapeError {
+                        kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError {
+                            surrogate: first,
+                        }),
+                        // The error is detected after consuming `\uXXXX` (6 bytes).
+                        offset: 6,
+                    });
+                }
             }
-            // If we reach here, no valid surrogate pair followed. That's a lone high surrogate.
-            return Err(UnescapeError {
-                kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
-                // The error is detected after consuming `\uXXXX` (6 bytes).
-                offset: 6,
-            });
         }
 
-        // Not a surrogate, or a valid low surrogate on its own (which is an error).
-        // If `first` is a low surrogate, `from_u32` will return None.
+        // Not a surrogate → normal path
         match char::from_u32(first as u32) {
-            Some(c) => {
-                // Success. Advance the main iterator.
-                *bytes = cloned_iter;
-                Ok(c)
-            }
-
+            Some(c) => Ok(c),
             None => Err(UnescapeError {
                 kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
                 // The error is detected after consuming `\uXXXX` (6 bytes).
@@ -607,34 +718,37 @@ impl<'a> Unescape<'a> {
             // LIMIT: We're allowed not checking here since we'll only produce 1 byte
             // and limit is at least 1.
             Some(0) => {
+                // We need to parse 4 hex digits from the iterator. But because
+                // `bytes` implements `Clone`, we can clone it to peek ahead
+                // in order to preserve the state of the iterator on failure.
+                let mut lookahead = self.bytes.clone();
                 // Backslash is the first byte in the slice: handle escape
-                self.bytes.next(); // Consume the backslash
+                lookahead.next(); // Consume the backslash
 
-                // Next byte dictates the escape form
-                match self.bytes.next() {
-                    Some(b'"') => Some(Ok(b"\"")),
-                    Some(b'\\') => Some(Ok(b"\\")),
-                    Some(b'/') => Some(Ok(b"/")),
-                    Some(b'b') => Some(Ok(b"\x08")),
-                    Some(b'f') => Some(Ok(b"\x0C")),
-                    Some(b'n') => Some(Ok(b"\n")),
-                    Some(b'r') => Some(Ok(b"\r")),
-                    Some(b't') => Some(Ok(b"\t")),
-                    Some(b'u') => match Self::handle_unicode_escape(&mut self.bytes) {
+                match lookahead.next() {
+                    Some(b'u') => match Self::handle_unicode_escape(&mut lookahead) {
                         Ok(ch) => {
+                            self.bytes = lookahead; // commit
                             self.store_unicode(ch);
                             self.emit_pending_byte()
                                 .map(|b| Ok(byte_as_static_slice(b)))
                         }
                         Err(err) => Some(Err(err)),
                     },
-                    Some(other) => Some(Err(UnescapeError {
-                        kind: UnescapeErrorKind::InvalidEscape(InvalidEscapeError {
-                            found: *other,
-                        }),
-                        // The invalid character is 1 byte after '\'.
-                        offset: 1,
-                    })),
+                    Some(byte) => {
+                        if let Some(slice) = UNESCAPE_TABLE[*byte as usize] {
+                            self.bytes = lookahead; // commit
+                            Some(Ok(slice))
+                        } else {
+                            Some(Err(UnescapeError {
+                                kind: UnescapeErrorKind::InvalidEscape(InvalidEscapeError {
+                                    found: *byte,
+                                }),
+                                // The invalid character is 1 byte after '\'.
+                                offset: 1,
+                            }))
+                        }
+                    }
                     None => Some(Err(UnescapeError {
                         kind: UnescapeErrorKind::UnexpectedEof,
                         // EOF occurred 1 byte after '\'.
@@ -1427,14 +1541,99 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+#[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
+#[inline]
+fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+    // This is the stable Rust path using explicit CPU intrinsics.
+    // It's guarded by cfg flags to only compile on x86_64 with the simd feature.
+    use std::arch::x86_64::*;
+
+    let mut i = 0;
+    const LANES: usize = 16; // SSE2 works on 128-bit registers, which is 16 bytes.
+
+    // On x86_64, we can tell the compiler to use SSE2 features in this specific function.
+    // This is safe because we've already checked the target architecture.
+    #[target_feature(enable = "sse2")]
+    unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
+        // Load 16 bytes of data from the slice. `_mm_loadu` handles unaligned memory.
+        let chunk = unsafe { _mm_loadu_si128(bytes.as_ptr().add(i) as *const _) };
+
+        // Create vectors with the character to check for in all 16 lanes.
+        // `_mm_set1_epi8` is the intrinsic equivalent of `Simd::splat`.
+        // Note: The comparison for `< ' '` works correctly with a signed comparison
+        // because all relevant characters (0-31) are positive.
+        let space_v = _mm_set1_epi8(b' ' as i8);
+        let quote_v = _mm_set1_epi8(b'"' as i8);
+        let slash_v = _mm_set1_epi8(b'\\' as i8);
+
+        // Perform the three comparisons in parallel.
+        let lt_space_mask = _mm_cmplt_epi8(chunk, space_v); // Signed less-than
+        let eq_quote_mask = _mm_cmpeq_epi8(chunk, quote_v);
+        let eq_slash_mask = _mm_cmpeq_epi8(chunk, slash_v);
+
+        // Combine the results. A lane is all 1s if any condition was true.
+        let combined_mask = _mm_or_si128(lt_space_mask, _mm_or_si128(eq_quote_mask, eq_slash_mask));
+
+        // Create a 16-bit integer bitmask from the most significant bit of each byte lane.
+        // This is the fastest way to find if any lane matched.
+        let mask = _mm_movemask_epi8(combined_mask);
+
+        // If the mask is not zero, at least one byte matched.
+        if mask != 0 {
+            // `trailing_zeros` finds the index of the first `1` bit, which
+            // corresponds to the first matching byte in our chunk.
+            Some(i + mask.trailing_zeros() as usize)
+        } else {
+            None
+        }
+    }
+
+    // Main loop
+    while i + LANES <= bytes.len() {
+        if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
+            return Some(result);
+        }
+        i += LANES;
+    }
+
+    // Handle the remainder with the fast scalar lookup.
+    if i < bytes.len() {
+        if let Some(pos) = bytes[i..]
+            .iter()
+            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+        {
+            return Some(i + pos);
+        }
+    }
+
+    None
+}
+
 // A fallback for when SIMD feature is off.
-#[cfg(not(nightly))]
+#[cfg(not(feature = "simd"))]
 #[inline]
 fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     bytes
         .iter()
         .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
 }
+
+#[cfg(all(feature = "simd", not(nightly), not(target_arch = "x86_64")))]
+compile_error! { "simd requires nightly or target_arch = \"x86_64\"" }
+
+// Escape table: maps the byte after '\' to its escaped representation.
+const UNESCAPE_TABLE: [Option<&[u8]>; 256] = {
+    let mut tbl: [Option<&[u8]>; 256] = [None; 256];
+    tbl[b'"' as usize] = Some(b"\"");
+    tbl[b'\\' as usize] = Some(b"\\");
+    tbl[b'/' as usize] = Some(b"/");
+    tbl[b'b' as usize] = Some(b"\x08");
+    tbl[b'f' as usize] = Some(b"\x0C");
+    tbl[b'n' as usize] = Some(b"\n");
+    tbl[b'r' as usize] = Some(b"\r");
+    tbl[b't' as usize] = Some(b"\t");
+    tbl
+};
 
 /// Static table mapping every u8 -> a &'static [u8] of length 1.
 /// This lets us return a `'static` slice for any single byte cheaply.
@@ -1929,7 +2128,7 @@ mod tests {
 
     #[test]
     fn test_read_error_lone_surrogate() {
-        let input = br#"\uD83D"#; // High surrogate without a following low one
+        let input = br#"\uD83D rest of data seen"#; // High surrogate without a following low one
         let mut reader = unescape(input);
         let mut buf = [0u8; 10];
 

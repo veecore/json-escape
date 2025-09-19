@@ -4,7 +4,10 @@ use std::process::Command;
 fn main() {
     // Get the rustc version
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
-    let output = Command::new(rustc).arg("--version").output().unwrap();
+    let output = Command::new(rustc)
+        .arg("--version")
+        .output()
+        .expect("failed to run rustc --version");
     let version = String::from_utf8(output.stdout).unwrap();
 
     println!("cargo:rustc-check-cfg=cfg(nightly)");
