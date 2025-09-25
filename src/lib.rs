@@ -71,6 +71,8 @@ use core::{
 };
 use memchr::memchr;
 
+pub mod explicit;
+
 // =============================================================================
 // Escape Implementation
 // =============================================================================
@@ -520,7 +522,7 @@ pub fn unescape_quoted<I: AsRef<[u8]> + ?Sized>(input: &I) -> Unescape<'_> {
 pub struct Unescape<'a> {
     // iterator over the input bytes (we use slice::Iter to clone/peek where necessary
     // without worrying too much about bookkeeping)
-    pub(crate) bytes: slice::Iter<'a, u8>,
+    bytes: slice::Iter<'a, u8>,
 
     // scratch buffer for encoded UTF-8 bytes from a \uXXXX (or surrogate pair)
     unicode: [u8; 4],
@@ -792,7 +794,7 @@ impl<'a> Unescape<'a> {
                         // 2. A single-byte escape like `\n` or `\t`.
                         // 3. The last byte of a multi-byte sequence (or the only byte).
                         // In all these cases, we just need to display the chunk we received.
-                        display_bytes_uft8(chunk, f, lossy)?;
+                        display_bytes_utf8(chunk, f, lossy)?;
                     }
                 }
                 Err(_) => {
@@ -1740,7 +1742,7 @@ where
 }
 
 #[inline]
-fn display_bytes_uft8(bytes: &[u8], f: &mut fmt::Formatter<'_>, lossy: bool) -> fmt::Result {
+fn display_bytes_utf8(bytes: &[u8], f: &mut fmt::Formatter<'_>, lossy: bool) -> fmt::Result {
     for chunk in bytes.utf8_chunks() {
         f.write_str(chunk.valid())?;
 

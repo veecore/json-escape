@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use json_escape::{escape_str, unescape, unescape_quoted};
+use json_escape::{escape_str, explicit, unescape, unescape_quoted};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -17,47 +17,108 @@ const DENSE_ESCAPES: &str = r#""\"\\\/\b\f\n\r\t""#;
 const UNICODE_ESCAPES_RAW: &str = r#"Unicode test: éàçüö. Emoji: 😀. More symbols: ❤️✅."#;
 const UNICODE_ESCAPES_ESCAPED: &str = r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#;
 
+/// A macro to benchmark a function from both the main and `explicit` modules.
+///
+/// The benchmark logic is written once, and this macro generates both versions.
+macro_rules! benchmark_pair {
+    (
+        // The criterion benchmark group, e.g., `&mut group`
+        $group:expr,
+        // The base name for this benchmark, e.g., "Iterate Only"
+        $bench_name:literal,
+        // The criterion input id and value from your loop, e.g., `(id, input)`
+        ($input_id:expr, $input_val:expr),
+        // The base name of the function to swap, e.g., `escape_str`
+        $func_name:ident,
+        // A closure containing the benchmark logic.
+        // It receives the bencher, the input value, and the function to call.
+        |$b:ident, $i:ident, $api_fn:ident| $body:block
+    ) => {
+        // --- Benchmark the main API ---
+        $group.bench_with_input(
+            BenchmarkId::new(format!("{}/Main", $bench_name), $input_id),
+            $input_val,
+            |$b, &$i| {
+                // In this scope, `api_fn` is the main function (e.g., `escape_str`)
+                let $api_fn = $func_name;
+                $body
+            },
+        );
+
+        // --- Benchmark the explicit API ---
+        $group.bench_with_input(
+            BenchmarkId::new(format!("{}/Explicit", $bench_name), $input_id),
+            $input_val,
+            |$b, &$i| {
+                // In this scope, `api_fn` is the explicit version (e.g., `explicit::escape_str`)
+                let $api_fn = explicit::$func_name;
+                $body
+            },
+        );
+    };
+}
+
 /// Benchmarks for the `escape_str` functionality.
 fn escape_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("Escape");
 
-    for (id, input) in [
-        ("No Escapes", NO_ESCAPES),
-        ("Sparse Escapes", SPARSE_ESCAPES),
-        ("Dense Escapes", DENSE_ESCAPES),
-        ("Unicode", UNICODE_ESCAPES_RAW),
-    ]
-    .iter()
-    {
-        // 1. Pure iterator performance (no allocation).
-        // Measures the overhead of the iterator logic itself.
-        group.bench_with_input(BenchmarkId::new("Iterate Only", id), input, |b, &i| {
-            b.iter(|| {
-                for chunk in escape_str(i) {
-                    black_box(chunk);
-                }
-            })
-        });
+    // for (id, input) in [
+    //     ("No Escapes", NO_ESCAPES),
+    //     ("Sparse Escapes", SPARSE_ESCAPES),
+    //     ("Dense Escapes", DENSE_ESCAPES),
+    //     ("Unicode", UNICODE_ESCAPES_RAW),
+    // ]
+    // .iter()
+    // {
+    //     // 1. Pure iterator performance (no allocation).
+    //     // Measures the overhead of the iterator logic itself.
+    //     benchmark_pair!(
+    //         &mut group,
+    //         "Iterate Only",
+    //         (id, input),
+    //         escape_str,
+    //         |b, i, a_fn| {
+    //             b.iter(|| {
+    //                 for chunk in a_fn(i) {
+    //                     black_box(chunk);
+    //                 }
+    //             })
+    //         }
+    //     );
 
-        // 2. Collecting into a String (includes allocation).
-        // A common use case that measures the full cost of creating an owned string.
-        group.bench_with_input(BenchmarkId::new("Collect to String", id), input, |b, &i| {
-            b.iter(|| {
-                let s: String = escape_str(i).collect();
-                black_box(s);
-            })
-        });
+    //     // 2. Collecting into a String (includes allocation).
+    //     // A common use case that measures the full cost of creating an owned string.
+    //     benchmark_pair!(
+    //         &mut group,
+    //         "Collect to String",
+    //         (id, input),
+    //         escape_str,
+    //         |b, i, a_fn| {
+    //             b.iter(|| {
+    //                 let s: String = a_fn(i).collect();
+    //                 black_box(s);
+    //             })
+    //         }
+    //     );
 
-        // 3. Writing to a sink using the `fmt::Display` implementation.
-        // Measures performance for streaming scenarios without intermediate allocation.
-        group.bench_with_input(BenchmarkId::new("Write to Sink", id), input, |b, &i| {
-            b.iter(|| {
-                let mut sink = io::sink(); // A writer that discards all data.
-                write!(sink, "{}", escape_str(i)).unwrap();
-                black_box(sink);
-            })
-        });
-    }
+    //     // 3. Writing to a sink using the `fmt::Display` implementation.
+    //     // Measures performance for streaming scenarios without intermediate allocation.
+    //     benchmark_pair!(
+    //         &mut group,
+    //         "Write to Sink",
+    //         (id, input),
+    //         escape_str,
+    //         |b, i, a_fn| {
+    //             b.iter(|| {
+    //                 let mut sink = io::sink();
+    //                 write!(sink, "{}", a_fn(i)).unwrap();
+    //                 black_box(sink);
+    //             })
+    //         }
+    //     );
+    // }
+
+    // --- Main API ---
 
     // 4. Special case: `Cow::from` conversion, testing the optimization paths.
     // Test the `Cow::Borrowed` fast path where no allocation occurs.
@@ -68,8 +129,26 @@ fn escape_benchmarks(c: &mut Criterion) {
         })
     });
 
+    // --- Explicit API ---
+    group.bench_function("Cow::from (Borrowed)/Explicit", |b| {
+        b.iter(|| {
+            let cow: Cow<str> = explicit::escape_str(NO_ESCAPES).into();
+            black_box(cow);
+        })
+    });
+
+    // --- Main API ---
+
     // Test the `Cow::Owned` path where allocation is necessary.
     group.bench_function("Cow::from (Owned)", |b| {
+        b.iter(|| {
+            let cow: Cow<str> = escape_str(SPARSE_ESCAPES).into();
+            black_box(cow);
+        })
+    });
+
+    // --- Explicit API ---
+    group.bench_function("Cow::from (Owned)/Explicit", |b| {
         b.iter(|| {
             let cow: Cow<str> = escape_str(SPARSE_ESCAPES).into();
             black_box(cow);
@@ -93,16 +172,18 @@ fn unescape_benchmarks(c: &mut Criterion) {
     {
         // 1. Pure iterator performance (no allocation).
         // Measures the overhead of the unescaping and error-handling logic.
-        group.bench_with_input(
-            BenchmarkId::new("Iterate Only", id),
-            input_escaped,
-            |b, &i| {
+        benchmark_pair!(
+            &mut group,
+            "Iterate Only",
+            (id, input_escaped),
+            unescape,
+            |b, i, a_fn| {
                 b.iter(|| {
-                    for r in unescape(i) {
+                    for r in a_fn(i) {
                         let _ = black_box(r);
                     }
                 })
-            },
+            }
         );
 
         // 2. Reading into a Vec via the `std::io::Read` implementation.
@@ -122,15 +203,17 @@ fn unescape_benchmarks(c: &mut Criterion) {
 
         // 3. Decoding to a UTF-8 String.
         // A primary use case that combines unescaping, allocation, and UTF-8 validation.
-        group.bench_with_input(
-            BenchmarkId::new("Decode UTF-8", id),
-            input_escaped,
-            |b, &i| {
+        benchmark_pair!(
+            &mut group,
+            "Decode UTF-8",
+            (id, input_escaped),
+            unescape,
+            |b, i, a_fn| {
                 b.iter(|| {
-                    let s = unescape(i).decode_utf8().unwrap();
+                    let s = a_fn(i).decode_utf8().unwrap();
                     black_box(s);
                 })
-            },
+            }
         );
     }
 
@@ -292,9 +375,9 @@ fn comparison_benchmarks(c: &mut Criterion) {
 // Register the benchmark groups.
 criterion_group!(
     benches,
-    escape_benchmarks,
-    unescape_benchmarks,
-    nested_json_benchmarks,
+    // escape_benchmarks,
+    // unescape_benchmarks,
+    // nested_json_benchmarks,
     comparison_benchmarks
 );
 criterion_main!(benches);
