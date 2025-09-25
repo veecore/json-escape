@@ -1621,65 +1621,65 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
 //     None
 // }
 
-#[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
-#[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    use std::arch::x86_64::*;
+// #[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
+// #[inline]
+// fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+//     use std::arch::x86_64::*;
 
-    let mut i = 0;
-    const LANES: usize = 16; // SSE2 128-bit = 16 bytes.
+//     let mut i = 0;
+//     const LANES: usize = 16; // SSE2 128-bit = 16 bytes.
 
-    // Main helper: uses signed intrinsics but performs unsigned comparison
-    #[target_feature(enable = "sse2")]
-    unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
-        let ptr = bytes.as_ptr().add(i) as *const _;
-        let chunk = _mm_loadu_si128(ptr);
+//     // Main helper: uses signed intrinsics but performs unsigned comparison
+//     #[target_feature(enable = "sse2")]
+//     unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
+//         let ptr = bytes.as_ptr().add(i) as *const _;
+//         let chunk = _mm_loadu_si128(ptr);
 
-        // Create vectors for comparisons.
-        // We'll XOR with 0x80 to turn unsigned compare into signed compare.
-        let xor_mask = _mm_set1_epi8(0x80u8 as i8);
+//         // Create vectors for comparisons.
+//         // We'll XOR with 0x80 to turn unsigned compare into signed compare.
+//         let xor_mask = _mm_set1_epi8(0x80u8 as i8);
 
-        // For "< 0x20" (i.e. bytes <= 0x1F) do an unsigned compare by first xor'ing.
-        let chunk_xored = _mm_xor_si128(chunk, xor_mask);
-        let space_xored = _mm_set1_epi8((b' 'u8 ^ 0x80u8) as i8);
-        let lt_space_mask = _mm_cmplt_epi8(chunk_xored, space_xored);
+//         // For "< 0x20" (i.e. bytes <= 0x1F) do an unsigned compare by first xor'ing.
+//         let chunk_xored = _mm_xor_si128(chunk, xor_mask);
+//         let space_xored = _mm_set1_epi8((b' 'u8 ^ 0x80u8) as i8);
+//         let lt_space_mask = _mm_cmplt_epi8(chunk_xored, space_xored);
 
-        // equality checks (unaffected by signedness)
-        let quote_v = _mm_set1_epi8(b'"' as i8);
-        let slash_v = _mm_set1_epi8(b'\\' as i8);
-        let eq_quote_mask = _mm_cmpeq_epi8(chunk, quote_v);
-        let eq_slash_mask = _mm_cmpeq_epi8(chunk, slash_v);
+//         // equality checks (unaffected by signedness)
+//         let quote_v = _mm_set1_epi8(b'"' as i8);
+//         let slash_v = _mm_set1_epi8(b'\\' as i8);
+//         let eq_quote_mask = _mm_cmpeq_epi8(chunk, quote_v);
+//         let eq_slash_mask = _mm_cmpeq_epi8(chunk, slash_v);
 
-        // Combine masks
-        let combined_mask = _mm_or_si128(lt_space_mask, _mm_or_si128(eq_quote_mask, eq_slash_mask));
-        let mask = _mm_movemask_epi8(combined_mask);
+//         // Combine masks
+//         let combined_mask = _mm_or_si128(lt_space_mask, _mm_or_si128(eq_quote_mask, eq_slash_mask));
+//         let mask = _mm_movemask_epi8(combined_mask);
 
-        if mask != 0 {
-            Some(i + mask.trailing_zeros() as usize)
-        } else {
-            None
-        }
-    }
+//         if mask != 0 {
+//             Some(i + mask.trailing_zeros() as usize)
+//         } else {
+//             None
+//         }
+//     }
 
-    while i + LANES <= bytes.len() {
-        if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
-            return Some(result);
-        }
-        i += LANES;
-    }
+//     while i + LANES <= bytes.len() {
+//         if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
+//             return Some(result);
+//         }
+//         i += LANES;
+//     }
 
-    // remainder
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
+//     // remainder
+//     if i < bytes.len() {
+//         if let Some(pos) = bytes[i..]
+//             .iter()
+//             .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+//         {
+//             return Some(i + pos);
+//         }
+//     }
 
-    None
-}
+//     None
+// }
 
 
 // A fallback for when SIMD feature is off.
