@@ -1502,56 +1502,56 @@ const ESCAPE_DECISION_TABLE: [u8; 256] = {
     table
 };
 
-// This is the SIMD version, compiled only when the "simd" feature is enabled on nightly build.
-#[cfg(all(feature = "simd", nightly))]
-#[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};
+// // This is the SIMD version, compiled only when the "simd" feature is enabled on nightly build.
+// #[cfg(all(feature = "simd", nightly))]
+// #[inline]
+// fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+//     use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};
 
-    const LANES: usize = 16; // Process 16 bytes at a time (fits in SSE2/AVX)
-    let mut i = 0;
+//     const LANES: usize = 16; // Process 16 bytes at a time (fits in SSE2/AVX)
+//     let mut i = 0;
 
-    // SIMD main loop
-    while i + LANES <= bytes.len() {
-        // Load 16 bytes from the slice into a SIMD vector.
-        let chunk = Simd::<u8, LANES>::from_slice(&bytes[i..]);
+//     // SIMD main loop
+//     while i + LANES <= bytes.len() {
+//         // Load 16 bytes from the slice into a SIMD vector.
+//         let chunk = Simd::<u8, LANES>::from_slice(&bytes[i..]);
 
-        // Create comparison vectors. These are effectively 16 copies of the byte.
-        let space_v = Simd::splat(b' ' - 1); // For the < ' ' check (i.e., <= 0x1F)
-        let quote_v = Simd::splat(b'"');
-        let slash_v = Simd::splat(b'\\');
+//         // Create comparison vectors. These are effectively 16 copies of the byte.
+//         let space_v = Simd::splat(b' ' - 1); // For the < ' ' check (i.e., <= 0x1F)
+//         let quote_v = Simd::splat(b'"');
+//         let slash_v = Simd::splat(b'\\');
 
-        // Perform all 16 comparisons at once. The result is a mask.
-        let lt_space_mask = chunk.simd_le(space_v);
-        let eq_quote_mask = chunk.simd_eq(quote_v);
-        let eq_slash_mask = chunk.simd_eq(slash_v);
+//         // Perform all 16 comparisons at once. The result is a mask.
+//         let lt_space_mask = chunk.simd_le(space_v);
+//         let eq_quote_mask = chunk.simd_eq(quote_v);
+//         let eq_slash_mask = chunk.simd_eq(slash_v);
 
-        // Combine the masks. A byte needs escaping if ANY of the conditions are true.
-        let combined_mask = lt_space_mask | eq_quote_mask | eq_slash_mask;
+//         // Combine the masks. A byte needs escaping if ANY of the conditions are true.
+//         let combined_mask = lt_space_mask | eq_quote_mask | eq_slash_mask;
 
-        // Check if any lane in the combined mask is true.
-        if combined_mask.any() {
-            // If yes, find the index of the *first* true lane.
-            // trailing_zeros() on the bitmask gives us this index directly.
-            let first_match_index = combined_mask.to_bitmask().trailing_zeros() as usize;
-            return Some(i + first_match_index);
-        }
+//         // Check if any lane in the combined mask is true.
+//         if combined_mask.any() {
+//             // If yes, find the index of the *first* true lane.
+//             // trailing_zeros() on the bitmask gives us this index directly.
+//             let first_match_index = combined_mask.to_bitmask().trailing_zeros() as usize;
+//             return Some(i + first_match_index);
+//         }
 
-        i += LANES;
-    }
+//         i += LANES;
+//     }
 
-    // Handle the remaining bytes (if any) with the simple iterator method.
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
+//     // Handle the remaining bytes (if any) with the simple iterator method.
+//     if i < bytes.len() {
+//         if let Some(pos) = bytes[i..]
+//             .iter()
+//             .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+//         {
+//             return Some(i + pos);
+//         }
+//     }
 
-    None
-}
+//     None
+// }
 
 // #[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
 // #[inline]
@@ -1681,9 +1681,8 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
 //     None
 // }
 
-
 // A fallback for when SIMD feature is off.
-#[cfg(not(feature = "simd"))]
+// #[cfg(not(feature = "simd"))]
 #[inline]
 fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     bytes
