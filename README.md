@@ -76,7 +76,7 @@ Benchmarks confirm that `json-escape` is significantly faster than standard meth
 | **Unescaping** (Iterate Only) | No Escapes | **$54.999\\text{ ns}$ (Explicit API)** | $88.443\\text{ ns}$ (Main API) |
 | **Escaping** (Iterate Only) | Dense Escapes | **$236.56\\text{ ns}$ (Explicit API)** | $278.02\\text{ ns}$ (Main API) |
 | **Unescaping** (Iterate Only) | Dense Escapes | **$200.87\\text{ ns}$ (Explicit API)** | $501.67\\text{ ns}$ (Main API) |
-| **Unescaping** (Decode UTF-8) | Unicode | **$1.5011\\text{ \\mu s}$ (Explicit API)** | $1.8918\\text{ \\mu s}$ (Main API) |
+| **Unescaping** (Decode UTF-8) | Unicode | **$1.5011\\text{ ms}$ (Explicit API)** | $1.8918\\text{ ms}$ (Main API) |
 | **Escaping to String** | Sparse Escapes | **\~2.8% to \~8.8% Faster** | `serde_json::to_string` |
 | **Unescaping from Str** | No Escapes | **\~2.8% Faster** | `serde_json::from_str` |
 

@@ -827,6 +827,8 @@ mod tests {
             escape_str("path/to/file").collect::<String>(),
             r#"path/to/file"#
         );
+
+        escape_str(r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#).for_each(|_| {});
     }
 
     #[test]

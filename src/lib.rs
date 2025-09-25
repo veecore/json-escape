@@ -50,6 +50,19 @@
 //! let decoded_cow = unescaper.decode_utf8().unwrap();
 //! assert_eq!(decoded_cow, "A 😀 emoji: 😀 and a tab\t!");
 //! ```
+//!
+//! ## Performance and the `explicit` Module
+//!
+//! This crate is designed for high-performance, zero-allocation escaping and
+//! unescaping. For most use cases, the functions in this root module provide the
+//! best balance of ergonomics and speed.
+//!
+//! However, for users with extreme performance requirements, the [`explicit`]
+//! module is provided. Its iterators yield structured `Chunk` data instead of
+//! simple slices. As shown by benchmarks, this approach can be slightly faster,
+//! especially on inputs with a high density of escape sequences. If you are
+//! processing a very large volume of JSON strings in a tight loop, consider
+//! using the `explicit` module for a potential performance boost.
 #![no_std]
 #![deny(missing_docs)]
 #![cfg_attr(all(feature = "simd", nightly), feature(portable_simd))]
