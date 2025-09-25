@@ -62,61 +62,61 @@ macro_rules! benchmark_pair {
 fn escape_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("Escape");
 
-    // for (id, input) in [
-    //     ("No Escapes", NO_ESCAPES),
-    //     ("Sparse Escapes", SPARSE_ESCAPES),
-    //     ("Dense Escapes", DENSE_ESCAPES),
-    //     ("Unicode", UNICODE_ESCAPES_RAW),
-    // ]
-    // .iter()
-    // {
-    //     // 1. Pure iterator performance (no allocation).
-    //     // Measures the overhead of the iterator logic itself.
-    //     benchmark_pair!(
-    //         &mut group,
-    //         "Iterate Only",
-    //         (id, input),
-    //         escape_str,
-    //         |b, i, a_fn| {
-    //             b.iter(|| {
-    //                 for chunk in a_fn(i) {
-    //                     black_box(chunk);
-    //                 }
-    //             })
-    //         }
-    //     );
+    for (id, input) in [
+        ("No Escapes", NO_ESCAPES),
+        ("Sparse Escapes", SPARSE_ESCAPES),
+        ("Dense Escapes", DENSE_ESCAPES),
+        ("Unicode", UNICODE_ESCAPES_RAW),
+    ]
+    .iter()
+    {
+        // 1. Pure iterator performance (no allocation).
+        // Measures the overhead of the iterator logic itself.
+        benchmark_pair!(
+            &mut group,
+            "Iterate Only",
+            (id, input),
+            escape_str,
+            |b, i, a_fn| {
+                b.iter(|| {
+                    for chunk in a_fn(i) {
+                        black_box(chunk);
+                    }
+                })
+            }
+        );
 
-    //     // 2. Collecting into a String (includes allocation).
-    //     // A common use case that measures the full cost of creating an owned string.
-    //     benchmark_pair!(
-    //         &mut group,
-    //         "Collect to String",
-    //         (id, input),
-    //         escape_str,
-    //         |b, i, a_fn| {
-    //             b.iter(|| {
-    //                 let s: String = a_fn(i).collect();
-    //                 black_box(s);
-    //             })
-    //         }
-    //     );
+        // 2. Collecting into a String (includes allocation).
+        // A common use case that measures the full cost of creating an owned string.
+        benchmark_pair!(
+            &mut group,
+            "Collect to String",
+            (id, input),
+            escape_str,
+            |b, i, a_fn| {
+                b.iter(|| {
+                    let s: String = a_fn(i).collect();
+                    black_box(s);
+                })
+            }
+        );
 
-    //     // 3. Writing to a sink using the `fmt::Display` implementation.
-    //     // Measures performance for streaming scenarios without intermediate allocation.
-    //     benchmark_pair!(
-    //         &mut group,
-    //         "Write to Sink",
-    //         (id, input),
-    //         escape_str,
-    //         |b, i, a_fn| {
-    //             b.iter(|| {
-    //                 let mut sink = io::sink();
-    //                 write!(sink, "{}", a_fn(i)).unwrap();
-    //                 black_box(sink);
-    //             })
-    //         }
-    //     );
-    // }
+        // 3. Writing to a sink using the `fmt::Display` implementation.
+        // Measures performance for streaming scenarios without intermediate allocation.
+        benchmark_pair!(
+            &mut group,
+            "Write to Sink",
+            (id, input),
+            escape_str,
+            |b, i, a_fn| {
+                b.iter(|| {
+                    let mut sink = io::sink();
+                    write!(sink, "{}", a_fn(i)).unwrap();
+                    black_box(sink);
+                })
+            }
+        );
+    }
 
     // --- Main API ---
 
@@ -375,9 +375,9 @@ fn comparison_benchmarks(c: &mut Criterion) {
 // Register the benchmark groups.
 criterion_group!(
     benches,
-    // escape_benchmarks,
-    // unescape_benchmarks,
-    // nested_json_benchmarks,
+    escape_benchmarks,
+    unescape_benchmarks,
+    nested_json_benchmarks,
     comparison_benchmarks
 );
 criterion_main!(benches);
