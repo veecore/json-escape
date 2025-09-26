@@ -85,7 +85,6 @@ use core::{
 use memchr::memchr;
 
 pub mod explicit;
-pub mod stream;
 
 // =============================================================================
 // Escape Implementation
