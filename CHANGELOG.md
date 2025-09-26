@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2025-09-26
+
+### Fixed
+
+- **Corrected offset for Unicode escape errors.** Previously, an incorrect manual adjustment of `+2` was applied to the error offset, causing invalid escape sequences like `\uD83D` to report the wrong position. This change removes the redundant adjustment, ensuring error positions are now reported accurately.
+
 ## [0.1.2] - 2025-09-25
 
 ### Added

@@ -419,9 +419,9 @@ impl<'a> Iterator for Unescape<'a> {
                 // that it can advance.
                 match crate::Unescape::handle_unicode_escape_from_slice(&mut remainder) {
                     Ok(c) => c,
-                    Err(mut e) => {
+                    Err(e) => {
+                        // FIX: handle_unicode_escape_from_slice already handles this for us.
                         // Adjust offset: error is relative to `\u`, but we need it relative to chunk start.
-                        e.offset += 2; // for `\u`
                         return Some(Err(e));
                     }
                 }
@@ -532,6 +532,12 @@ impl<'a> Unescape<'a> {
             inner: self,
             lossy: true,
         }
+    }
+
+    // TODO: Doc
+    #[inline]
+    pub(crate) const fn remnant(&self) -> &[u8] {
+        self.bytes
     }
 }
 

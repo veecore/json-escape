@@ -85,6 +85,7 @@ use core::{
 use memchr::memchr;
 
 pub mod explicit;
+pub mod stream;
 
 // =============================================================================
 // Escape Implementation
@@ -555,6 +556,7 @@ impl<'a> Unescape<'a> {
         }
     }
 
+    // FIXME: Replace iter with slice and match on b with a table
     /// Helper: parse exactly 4 hex digits from `it`. Returns Ok(u16) or an error.
     #[inline(always)]
     fn parse_hex4(iter: &mut slice::Iter<'a, u8>, base_offset: u8) -> Result<u16, UnescapeError> {
@@ -1789,6 +1791,13 @@ mod tests {
         assert_eq!(got, want);
 
         // Test PartialEq too
+        assert_eq!(escape_str(input), want);
+
+        // FIXME: Once logic is unified, remove this.
+        let got = explicit::escape_str(input).collect::<String>();
+        assert_eq!(got, want);
+
+        // Test PartialEq too
         assert_eq!(escape_str(input), want)
     }
 
@@ -1880,6 +1889,16 @@ mod tests {
 
         // Help display
         assert_display(unescape(input).display_utf8(), Ok(want));
+
+        // FIXME: Once logic is unified, remove this.
+        let got = explicit::unescape(input).decode_utf8().unwrap();
+        assert_eq!(got, want);
+
+        // Test PartialEq too
+        assert_eq!(explicit::unescape(input), want);
+
+        // Help display
+        assert_display(explicit::unescape(input).display_utf8(), Ok(want));
     }
 
     #[test]
@@ -1906,6 +1925,17 @@ mod tests {
     fn test_invalid_escape_unescape() {
         let s = b"\\x";
         let mut u = unescape(s);
+
+        match u.next() {
+            Some(Err(UnescapeError {
+                kind: UnescapeErrorKind::InvalidEscape(InvalidEscapeError { found: b'x' }),
+                offset: 1,
+            })) => {}
+            _ => panic!("expected invalid escape"),
+        }
+
+        // FIXME: Once logic is unified, remove this.
+        let mut u = explicit::unescape(s);
 
         match u.next() {
             Some(Err(UnescapeError {
@@ -1941,6 +1971,15 @@ mod tests {
             }
         }
         assert!(found);
+
+        // FIXME: Once logic is unified, remove this.
+        assert_eq!(
+            explicit::unescape(input).next(),
+            Some(Err(UnescapeError {
+                kind: UnescapeErrorKind::UnexpectedEof,
+                offset: 4,
+            }))
+        );
     }
 
     // ===================== Chunk_Eq ===================== //
