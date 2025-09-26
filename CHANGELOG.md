@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 -   Updated crate description in `Cargo.toml` and README to better highlight **ergonomics, correctness, and RFC compliance** alongside high performance.
 
+### Fixed
+
+  - **Corrected a critical panic** in the SIMD-accelerated escape logic that occurred when processing strings containing multi-byte Unicode characters on x86\_64 targets.
+  
 ***
 
 ## [0.1.1] - 2025-09-19

@@ -124,7 +124,7 @@ impl<'a> fmt::Display for EscapedChunk<'a> {
 
 /// An iterator over a string that yields [`EscapedChunk`]s.
 ///
-/// Created by the [`escape`] function.
+/// Created by the [`escape_str`] function.
 #[derive(Clone)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct Escape<'a> {
@@ -828,7 +828,7 @@ mod tests {
             r#"path/to/file"#
         );
 
-        escape_str(r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#).for_each(|_| {});
+        escape_str(r#"Unicode test: éàçüö. Emoji: 😀. More symbols: ❤️✅."#).for_each(|_| {});
     }
 
     #[test]
