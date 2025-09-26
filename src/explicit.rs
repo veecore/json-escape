@@ -533,12 +533,6 @@ impl<'a> Unescape<'a> {
             lossy: true,
         }
     }
-
-    // TODO: Doc
-    #[inline]
-    pub(crate) const fn remnant(&self) -> &[u8] {
-        self.bytes
-    }
 }
 
 impl fmt::Debug for Unescape<'_> {
