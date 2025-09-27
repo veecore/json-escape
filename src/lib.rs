@@ -1370,7 +1370,6 @@ const ESCAPE_TABLE: [Option<&'static str>; 256] = {
     table
 };
 
-
 // Not public API. Exposed for test
 #[doc(hidden)]
 // A simple boolean-like lookup table for SIMD.
@@ -1581,14 +1580,16 @@ pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
 
     // tail bytes
     if i < bytes.len() {
-        if let Some(pos) = bytes[i..].iter().position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0) {
+        if let Some(pos) = bytes[i..]
+            .iter()
+            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+        {
             return Some(i + pos);
         }
     }
 
     None
 }
-
 
 #[cfg(all(feature = "simd", not(nightly), not(target_arch = "x86_64")))]
 compile_error! { "simd requires nightly or target_arch = \"x86_64\"" }
