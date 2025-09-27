@@ -17,6 +17,37 @@ const DENSE_ESCAPES: &str = r#""\"\\\/\b\f\n\r\t""#;
 const UNICODE_ESCAPES_RAW: &str = r#"Unicode test: éàçüö. Emoji: 😀. More symbols: ❤️✅."#;
 const UNICODE_ESCAPES_ESCAPED: &str = r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#;
 
+fn benchmark_find_escape_char(c: &mut Criterion) {
+    use json_escape::{ESCAPE_DECISION_TABLE, find_escape_char};
+
+    let mut group = c.benchmark_group("Find Escape Char");
+
+    fn find_escape_char_plain(bytes: &[u8]) -> Option<usize> {
+        bytes
+            .iter()
+            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+    }
+
+    for (id, input) in [
+        ("No Escapes", NO_ESCAPES),
+        ("Sparse Escapes", SPARSE_ESCAPES),
+        ("Dense Escapes", DENSE_ESCAPES),
+        ("Unicode", UNICODE_ESCAPES_RAW),
+    ]
+    .iter()
+    {
+        group.bench_with_input(*id, input, |b, i| {
+            b.iter(|| black_box(find_escape_char(black_box(i.as_bytes()))))
+        });
+
+        group.bench_with_input(format!("Plain/{id}"), input, |b, i| {
+            b.iter(|| black_box(find_escape_char_plain(black_box(i.as_bytes()))))
+        });
+    }
+
+    group.finish();
+}
+
 /// A macro to benchmark a function from both the main and `explicit` modules.
 ///
 /// The benchmark logic is written once, and this macro generates both versions.
@@ -372,6 +403,7 @@ fn comparison_benchmarks(c: &mut Criterion) {
 // Register the benchmark groups.
 criterion_group!(
     benches,
+    benchmark_find_escape_char,
     escape_benchmarks,
     unescape_benchmarks,
     nested_json_benchmarks,

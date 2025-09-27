@@ -1370,11 +1370,14 @@ const ESCAPE_TABLE: [Option<&'static str>; 256] = {
     table
 };
 
+
+// Not public API. Exposed for test
+#[doc(hidden)]
 // A simple boolean-like lookup table for SIMD.
 // 0 = no escape needed, 1 = escape needed.
 // This is very compact (256 bytes) and fits easily in the L1 cache.
 #[allow(unused)]
-const ESCAPE_DECISION_TABLE: [u8; 256] = {
+pub const ESCAPE_DECISION_TABLE: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut i = 0;
     while i < 256 {
@@ -1386,10 +1389,12 @@ const ESCAPE_DECISION_TABLE: [u8; 256] = {
     table
 };
 
+// Not public API. Exposed for test
+#[doc(hidden)]
 // This is the SIMD version, compiled only when the "simd" feature is enabled on nightly build.
 #[cfg(all(feature = "simd", nightly))]
 #[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};
 
     const LANES: usize = 16; // Process 16 bytes at a time (fits in SSE2/AVX)
@@ -1437,9 +1442,11 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+// Not public API. Exposed for test
+#[doc(hidden)]
 #[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
 #[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     // This is the stable Rust path using explicit CPU intrinsics.
     // It's guarded by cfg flags to only compile on x86_64 with the simd feature.
     use std::arch::x86_64::*;
@@ -1509,14 +1516,79 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+// Not public API. Exposed for test
 // A fallback for when SIMD feature is off.
+#[doc(hidden)]
 #[cfg(not(feature = "simd"))]
 #[inline]
-fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .iter()
-        .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
+pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
+    use core::mem::size_of;
+
+    const WORD_SIZE: usize = size_of::<usize>();
+    const THRESH: u8 = 0x20; // control threshold
+
+    // helper: repeat a byte across a usize (works for any usize width)
+    const fn repeat(b: u8) -> usize {
+        let mut m: usize = 0;
+        let mut i = 0;
+        while i < WORD_SIZE {
+            m = (m << 8) | (b as usize);
+            i += 1;
+        }
+        m
+    }
+
+    // Precompute masks as constants
+    const ONE_MASK: usize = repeat(0x01);
+    const MSB_MASK: usize = repeat(0x80);
+    const QUOTE_MASK: usize = repeat(b'"');
+    const SLASH_MASK: usize = repeat(b'\\');
+    const THR_MASK: usize = repeat(THRESH);
+
+    let mut i = 0usize;
+    while i + WORD_SIZE <= bytes.len() {
+        // SAFETY: we checked bounds; read_unaligned is allowed for any alignment.
+        let word = unsafe { (bytes.as_ptr().add(i) as *const usize).read_unaligned() };
+
+        // equality tests (SWAR zero-byte detection on XOR)
+        let xq = word ^ QUOTE_MASK;
+        let quote_bits = (xq.wrapping_sub(ONE_MASK) & !xq) & MSB_MASK;
+
+        let xs = word ^ SLASH_MASK;
+        let slash_bits = (xs.wrapping_sub(ONE_MASK) & !xs) & MSB_MASK;
+
+        // control: detect bytes < 0x20 using subtract+~word+msb trick
+        // If any byte b satisfies b < 0x20 then the corresponding MSB bit in control_bits is set.
+        let control_bits = (word.wrapping_sub(THR_MASK) & !word) & MSB_MASK;
+
+        // combined mask: MSB-bit set per candidate byte
+        let combined = quote_bits | slash_bits | control_bits;
+
+        if combined != 0 {
+            // Find earliest matching byte inside this word in a portable way:
+            // - on little-endian the least-significant set bit corresponds to the earliest byte
+            // - on big-endian the most-significant set bit corresponds to the earliest byte
+            let byte_index = if cfg!(target_endian = "little") {
+                (combined.trailing_zeros() as usize) / 8
+            } else {
+                (combined.leading_zeros() as usize) / 8
+            };
+            return Some(i + byte_index);
+        }
+
+        i += WORD_SIZE;
+    }
+
+    // tail bytes
+    if i < bytes.len() {
+        if let Some(pos) = bytes[i..].iter().position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0) {
+            return Some(i + pos);
+        }
+    }
+
+    None
 }
+
 
 #[cfg(all(feature = "simd", not(nightly), not(target_arch = "x86_64")))]
 compile_error! { "simd requires nightly or target_arch = \"x86_64\"" }
