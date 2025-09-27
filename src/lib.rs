@@ -1008,7 +1008,7 @@ impl<'a, 'b> PartialEq<Unescape<'a>> for Unescape<'b> {
     /// ```
     fn eq(&self, other: &Unescape<'a>) -> bool {
         // Fast path: if they are views into the same underlying data with the same state.
-        ((self.inner.bytes.as_ref() == other.inner.bytes.as_ref())
+        ((self.inner.bytes == other.inner.bytes)
             && (self.unicode == other.unicode)
             && (self.unicode_len == other.unicode_len)
             && (self.unicode_pos == other.unicode_pos))

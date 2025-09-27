@@ -562,7 +562,7 @@ impl<'a> Unescape<'a> {
         // Parse first 4 hex digits (\uXXXX)
         //
         // The slice starts *after* '\u'. The first hex digit is at offset 2 from '\'.
-        let first = Self::parse_hex4(&bytes, 2)?;
+        let first = Self::parse_hex4(bytes, 2)?;
 
         // High surrogate → must be followed by another \uXXXX low surrogate
         if (0xD800..=0xDBFF).contains(&first) {
@@ -611,8 +611,6 @@ impl<'a> Unescape<'a> {
                     }
                 }
             } else {
-                if remaining.len() < 2 {}
-
                 // High surrogate was not followed by a `\u` sequence.
                 return Err(UnescapeError {
                     kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
@@ -677,8 +675,7 @@ impl<'a> Unescape<'a> {
         #[cold]
         fn handle_error(slice: &[u8], base_offset: u8) -> UnescapeError {
             // Loop through the bytes we *do* have.
-            for i in 0..slice.len() {
-                let b = slice[i]; // Safe, since i is bounded by slice.len()
+            for (i, &b) in slice.iter().enumerate() {
                 if HEX[b as usize].is_none() {
                     // We found an invalid hex character before running out of bytes.
                     return UnescapeError {
