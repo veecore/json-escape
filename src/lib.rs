@@ -80,9 +80,8 @@ use core::{
     char,
     fmt::{self, Write as _},
     iter::FusedIterator,
-    slice, str,
+    str,
 };
-use memchr::memchr;
 
 pub mod explicit;
 
@@ -153,7 +152,7 @@ impl<'a> Iterator for Escape<'a> {
             // No escapable characters left; return the rest of the slice.
             None => {
                 let s = self.bytes;
-                self.bytes = &[];
+                self.bytes = &self.bytes[self.bytes.len()..];
                 // SAFETY: The input was a valid &str, and we're returning the
                 // whole remaining chunk, so it's still valid UTF-8.
                 Some(unsafe { str::from_utf8_unchecked(s) })
@@ -533,10 +532,8 @@ pub fn unescape_quoted<I: AsRef<[u8]> + ?Sized>(input: &I) -> Unescape<'_> {
 #[derive(Clone)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct Unescape<'a> {
-    // iterator over the input bytes (we use slice::Iter to clone/peek where necessary
-    // without worrying too much about bookkeeping)
-    bytes: slice::Iter<'a, u8>,
-
+    // The inner, chunk-based iterator.
+    inner: explicit::Unescape<'a>,
     // scratch buffer for encoded UTF-8 bytes from a \uXXXX (or surrogate pair)
     unicode: [u8; 4],
     // We can eliminate this by depending on the header.
@@ -548,117 +545,10 @@ impl<'a> Unescape<'a> {
     /// Construct from a byte slice which contains the characters inside the JSON string (no quotes).
     fn new(input: &'a [u8]) -> Self {
         Self {
-            bytes: input.iter(),
+            inner: explicit::Unescape { bytes: input },
             unicode: [0; 4],
             unicode_len: 0,
             unicode_pos: 0,
-        }
-    }
-
-    // FIXME: Replace iter with slice and match on b with a table
-    /// Helper: parse exactly 4 hex digits from `it`. Returns Ok(u16) or an error.
-    #[inline(always)]
-    fn parse_hex4(iter: &mut slice::Iter<'a, u8>, base_offset: u8) -> Result<u16, UnescapeError> {
-        let mut acc = 0u16;
-        for i in 0..4 {
-            let b = match iter.next() {
-                Some(b) => *b,
-                None => {
-                    return Err(UnescapeError {
-                        kind: UnescapeErrorKind::UnexpectedEof,
-                        // The error occurs where the next digit was expected.
-                        offset: base_offset + i,
-                    });
-                }
-            };
-            let v = match b {
-                b'0'..=b'9' => (b - b'0') as u16,
-                b'a'..=b'f' => (b - b'a' + 10) as u16,
-                b'A'..=b'F' => (b - b'A' + 10) as u16,
-                _ => {
-                    return Err(UnescapeError {
-                        kind: UnescapeErrorKind::InvalidHex(InvalidHexError { found: b }),
-                        // The error is the invalid digit itself.
-                        offset: base_offset + i,
-                    });
-                }
-            };
-            acc = (acc << 4) | v;
-        }
-        Ok(acc)
-    }
-
-    /// Parses a unicode escape sequence `\uXXXX` which may be a surrogate pair.
-    /// The iterator `bytes` must be positioned *after* the `\u`.
-    ///
-    /// NOTE: Doesn't preserve the state of the iterator on error
-    #[inline(always)]
-    fn handle_unicode_escape(bytes: &mut slice::Iter<'a, u8>) -> Result<char, UnescapeError> {
-        // Parse first 4 hex digits (\uXXXX)
-        //
-        // The iterator starts *after* '\u'. The first hex digit is at offset 2 from '\'.
-        let first = Self::parse_hex4(bytes, 2)?;
-
-        // High surrogate → must be followed by another \uXXXX low surrogate
-        if (0xD800..=0xDBFF).contains(&first) {
-            match (bytes.next(), bytes.next()) {
-                (Some(b'\\'), Some(b'u')) => {
-                    // Try parsing the low surrogate
-                    //
-                    // The first hex digit of the second escape is at offset 8.
-                    // (\uXXXX\u -> 8 chars)
-                    match Self::parse_hex4(bytes, 8) {
-                        Ok(low) if (0xDC00..=0xDFFF).contains(&low) => {
-                            let high_t = first as u32;
-                            let low_t = low as u32;
-                            let code = 0x10000 + (((high_t - 0xD800) << 10) | (low_t - 0xDC00));
-                            return Ok(char::from_u32(code).expect(
-                                "valid surrogate pair math should always produce a valid char",
-                            ));
-                        }
-                        Ok(_) => {
-                            // Got a full escape but not a low surrogate → Lone surrogate
-                            return Err(UnescapeError {
-                                kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError {
-                                    surrogate: first,
-                                }),
-                                offset: 6,
-                            });
-                        }
-                        Err(err) => {
-                            // parse_hex4 failed (e.g. ran out of hex digits)
-                            return Err(err);
-                        }
-                    }
-                }
-                // EOF before even seeing '\' or 'u' → UnexpectedEof
-                (None, _) | (_, None) => {
-                    return Err(UnescapeError {
-                        kind: UnescapeErrorKind::UnexpectedEof,
-                        offset: 6,
-                    });
-                }
-                // Something else after high surrogate → LoneSurrogate
-                _ => {
-                    return Err(UnescapeError {
-                        kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError {
-                            surrogate: first,
-                        }),
-                        // The error is detected after consuming `\uXXXX` (6 bytes).
-                        offset: 6,
-                    });
-                }
-            }
-        }
-
-        // Not a surrogate → normal path
-        match char::from_u32(first as u32) {
-            Some(c) => Ok(c),
-            None => Err(UnescapeError {
-                kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
-                // The error is detected after consuming `\uXXXX` (6 bytes).
-                offset: 6,
-            }),
         }
     }
 
@@ -691,93 +581,6 @@ impl<'a> Unescape<'a> {
         self.unicode_pos = self.unicode_len;
 
         Ok(())
-    }
-
-    /// The single, authoritative helper for producing unescaped byte chunks.
-    ///
-    /// It takes an optional `max` length to limit the size of the returned slice,
-    /// which is essential for the `std::io::Read` implementation.
-    #[inline(always)]
-    fn next_limit(&mut self, limit: Option<usize>) -> Option<Result<&'a [u8], UnescapeError>> {
-        if limit.is_some_and(|l| l == 0) {
-            return Some(Ok(&[]));
-        }
-
-        // If we have pending bytes, emit them first (fast).
-        //
-        // LIMIT: We're allowed not checking here since we'll only produce 1 byte
-        // and limit is at least 1.
-        if let Some(s) = self.emit_pending_byte() {
-            // s: &'static [u8] coerces to &'a [u8]
-            return Some(Ok(byte_as_static_slice(s)));
-        }
-
-        let bytes = self.bytes.as_slice();
-        if bytes.is_empty() {
-            return None;
-        }
-
-        // Find next backslash in the remaining bytes.
-        let pos = memchr(b'\\', bytes);
-
-        match pos {
-            None => {
-                // No more escapes. Return the rest of the slice as a borrowed chunk.
-                let chunk_len = bytes.len().min(limit.unwrap_or(bytes.len()));
-                let (chunk, rest) = bytes.split_at(chunk_len);
-                self.bytes = rest.iter();
-                Some(Ok(chunk))
-            }
-            // LIMIT: We're allowed not checking here since we'll only produce 1 byte
-            // and limit is at least 1.
-            Some(0) => {
-                // We need to parse 4 hex digits from the iterator. But because
-                // `bytes` implements `Clone`, we can clone it to peek ahead
-                // in order to preserve the state of the iterator on failure.
-                let mut lookahead = self.bytes.clone();
-                // Backslash is the first byte in the slice: handle escape
-                lookahead.next(); // Consume the backslash
-
-                match lookahead.next() {
-                    Some(b'u') => match Self::handle_unicode_escape(&mut lookahead) {
-                        Ok(ch) => {
-                            self.bytes = lookahead; // commit
-                            self.store_unicode(ch);
-                            self.emit_pending_byte()
-                                .map(|b| Ok(byte_as_static_slice(b)))
-                        }
-                        Err(err) => Some(Err(err)),
-                    },
-                    Some(byte) => {
-                        if let Some(slice) = UNESCAPE_TABLE[*byte as usize] {
-                            self.bytes = lookahead; // commit
-                            Some(Ok(slice))
-                        } else {
-                            Some(Err(UnescapeError {
-                                kind: UnescapeErrorKind::InvalidEscape(InvalidEscapeError {
-                                    found: *byte,
-                                }),
-                                // The invalid character is 1 byte after '\'.
-                                offset: 1,
-                            }))
-                        }
-                    }
-                    None => Some(Err(UnescapeError {
-                        kind: UnescapeErrorKind::UnexpectedEof,
-                        // EOF occurred 1 byte after '\'.
-                        offset: 1,
-                    })),
-                }
-            }
-            // Found \ after a safe prefix. Return the prefix. We'll handle on next call to next
-            Some(p) => {
-                // Return the safe prefix (borrowed from input)
-                let chunk_len = p.min(limit.unwrap_or(p));
-                let (chunk, rest) = bytes.split_at(chunk_len);
-                self.bytes = rest.iter();
-                Some(Ok(chunk))
-            }
-        }
     }
 
     fn _display_utf8(mut self, f: &mut fmt::Formatter<'_>, lossy: bool) -> fmt::Result {
@@ -926,16 +729,29 @@ impl<'a> Iterator for Unescape<'a> {
     type Item = Result<&'a [u8], UnescapeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_limit(None)
+        // If we have pending bytes, emit them first (fast).
+        if let Some(s) = self.emit_pending_byte() {
+            // s: &'static [u8] coerces to &'a [u8]
+            return Some(Ok(byte_as_static_slice(s)));
+        }
+
+        match self.inner.next() {
+            Some(Ok(chunk)) => {
+                if let Some(ch) = chunk.unescaped {
+                    self.store_unicode(ch);
+                }
+                Some(Ok(chunk.literal))
+            }
+            Some(Err(err)) => Some(Err(err)),
+            None => None,
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // The minimum size is 0 (if the rest of the string is an invalid escape).
-        // The maximum size is the remaining length of the underlying bytes + pending_unicode
-        let (lower, upper) = self.bytes.size_hint();
+        // The maximum size is the remaining length of the underlying iter + pending_unicode
+        let (lower, upper) = self.inner.size_hint();
         let upper = upper.map(|x| x + (self.unicode_len as usize));
-        // Worst-case is \uXXXX -> 1 byte, so 6 -> 1.
-        (lower.saturating_add(1) / 6, upper)
+        (lower, upper)
     }
 }
 
@@ -943,32 +759,100 @@ impl<'a> FusedIterator for Unescape<'a> {}
 
 #[cfg(feature = "std")]
 impl std::io::Read for Unescape<'_> {
-    fn read(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
-        let start_len = buf.len();
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut total_written = 0;
+        let mut remaining_buf = buf;
 
-        // Read until buf is full or iter drained
+        // Loop until the destination buffer is full or we are completely out of data.
         loop {
-            // If the buffer is empty, we're done.
-            if buf.is_empty() {
-                return Ok(start_len);
+            // Priority 1: Drain any pending bytes from an unescaped character first.
+            if self.unicode_pos < self.unicode_len {
+                let pending_unicode =
+                    &self.unicode[self.unicode_pos as usize..self.unicode_len as usize];
+                let bytes_to_copy = pending_unicode.len().min(remaining_buf.len());
+
+                remaining_buf[..bytes_to_copy].copy_from_slice(&pending_unicode[..bytes_to_copy]);
+                self.unicode_pos += bytes_to_copy as u8;
+                total_written += bytes_to_copy;
+                remaining_buf = &mut remaining_buf[bytes_to_copy..];
+
+                // If buffer is now full, we are done for this call.
+                if remaining_buf.is_empty() {
+                    break;
+                }
+            }
+            if self.unicode_pos >= self.unicode_len {
+                self.unicode_pos = 0;
+                self.unicode_len = 0;
             }
 
-            match self.next_limit(Some(buf.len())) {
+            // Priority 2: Get and process a new chunk from the inner iterator.
+            match self.inner.next() {
                 Some(Ok(chunk)) => {
-                    // chunk.len() <= buf.len()... next_limit ensures this
-                    let len = chunk.len();
-                    buf[..len].copy_from_slice(chunk);
-                    buf = &mut buf[len..]
+                    let bytes_to_copy = chunk.literal.len().min(remaining_buf.len());
+                    if bytes_to_copy > 0 {
+                        remaining_buf[..bytes_to_copy]
+                            .copy_from_slice(&chunk.literal[..bytes_to_copy]);
+                        total_written += bytes_to_copy;
+                        remaining_buf = &mut remaining_buf[bytes_to_copy..];
+                    }
+
+                    // ### THE BACKTRACKING TRICK ###
+                    // This block executes if the destination `buf` was filled before we could
+                    // finish reading the `literal` part of the current chunk.
+                    if bytes_to_copy < chunk.literal.len() {
+                        // We must reconstruct the *entire unread portion of the stream*.
+                        // This includes:
+                        //   1. The rest of the literal (e.g., "de").
+                        //   2. The original escaped sequence (e.g., "\\n").
+                        //   3. The rest of the stream that followed (e.g., "fghi").
+                        //
+                        // These parts are all contiguous in the original input slice.
+                        // We can create a new slice view over this memory using pointer arithmetic.
+
+                        // SAFETY: This is safe for several reasons:
+                        // 1. `chunk.literal` and `self.inner.bytes` are both derived from the same
+                        //    original slice with lifetime `'a`. All memory is valid.
+                        // 2. `new_start_ptr` points to the start of the unread literal part, a valid memory location.
+                        // 3. `stream_end_ptr` points to the end of the stream that `self.inner.bytes` currently sees.
+                        // 4. The resulting slice is therefore a valid, contiguous sub-slice of the original input.
+                        unsafe {
+                            // Pointer to the first byte of the unread part of the literal.
+                            let new_start_ptr = chunk.literal.as_ptr().add(bytes_to_copy);
+
+                            // Pointer to one byte past the end of the remaining stream.
+                            // We don't set self.inner.bytes to &[] in explicit
+                            let stream_end_ptr =
+                                self.inner.bytes.as_ptr().add(self.inner.bytes.len());
+
+                            // The new length is the distance between these two pointers.
+                            let new_len = stream_end_ptr as usize - new_start_ptr as usize;
+
+                            // Reset the inner iterator's slice to this reconstructed view.
+                            self.inner.bytes = std::slice::from_raw_parts(new_start_ptr, new_len);
+                        }
+
+                        // Since the buffer is full, we must stop and return. The next `read` call
+                        // will now correctly resume from the middle of the previous chunk.
+                        break;
+                    }
+
+                    // If we get here, the entire literal was consumed. Now handle the unescaped char.
+                    if let Some(ch) = chunk.unescaped {
+                        let encoded = ch.encode_utf8(&mut self.unicode);
+                        self.unicode_len = encoded.len() as u8;
+                        // Loop to immediately process the newly buffered unicode bytes.
+                        continue;
+                    }
                 }
-                Some(Err(err)) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
+                Some(Err(e)) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
                 }
-                None => {
-                    // iter is drained
-                    return Ok(start_len - buf.len());
-                }
+                None => break, // Inner iterator is exhausted.
             }
         }
+
+        Ok(total_written)
     }
 
     // We can provide an optimized version of read_to_end
@@ -1124,7 +1008,7 @@ impl<'a, 'b> PartialEq<Unescape<'a>> for Unescape<'b> {
     /// ```
     fn eq(&self, other: &Unescape<'a>) -> bool {
         // Fast path: if they are views into the same underlying data with the same state.
-        ((self.bytes.as_ref() == other.bytes.as_ref())
+        ((self.inner.bytes.as_ref() == other.inner.bytes.as_ref())
             && (self.unicode == other.unicode)
             && (self.unicode_len == other.unicode_len)
             && (self.unicode_pos == other.unicode_pos))
@@ -1189,7 +1073,7 @@ impl<'a> TryFrom<Unescape<'a>> for Cow<'a, [u8]> {
                 None => Ok(Cow::Borrowed(first)),
                 Some(Ok(second)) => {
                     let mut buf =
-                        Vec::with_capacity(first.len() + second.len() + value.bytes.len());
+                        Vec::with_capacity(first.len() + second.len() + value.inner.bytes.len());
                     buf.extend_from_slice(first);
                     buf.extend_from_slice(second);
                     for item in value {
@@ -1354,9 +1238,8 @@ impl UnescapeError {
     /// let json_string_content = r#"bad escape \x here"#;
     /// let mut unescaper = unescape(json_string_content);
     ///
-    /// // read off 'bad escape '
-    /// let first = unescaper.next().unwrap().unwrap();
-    /// assert_eq!(first, b"bad escape ");
+    /// // previous read
+    /// // { ... }
     ///
     /// let err = unescaper.next().unwrap().unwrap_err();
     ///
@@ -1638,20 +1521,6 @@ fn find_escape_char(bytes: &[u8]) -> Option<usize> {
 #[cfg(all(feature = "simd", not(nightly), not(target_arch = "x86_64")))]
 compile_error! { "simd requires nightly or target_arch = \"x86_64\"" }
 
-// Escape table: maps the byte after '\' to its escaped representation.
-const UNESCAPE_TABLE: [Option<&[u8]>; 256] = {
-    let mut tbl: [Option<&[u8]>; 256] = [None; 256];
-    tbl[b'"' as usize] = Some(b"\"");
-    tbl[b'\\' as usize] = Some(b"\\");
-    tbl[b'/' as usize] = Some(b"/");
-    tbl[b'b' as usize] = Some(b"\x08");
-    tbl[b'f' as usize] = Some(b"\x0C");
-    tbl[b'n' as usize] = Some(b"\n");
-    tbl[b'r' as usize] = Some(b"\r");
-    tbl[b't' as usize] = Some(b"\t");
-    tbl
-};
-
 /// Static table mapping every u8 -> a &'static [u8] of length 1.
 /// This lets us return a `'static` slice for any single byte cheaply.
 const U8_TABLE: [[u8; 1]; 256] = {
@@ -1792,7 +1661,7 @@ mod tests {
         // Test PartialEq too
         assert_eq!(escape_str(input), want);
 
-        // FIXME: Once logic is unified, remove this.
+        // Let's test explicit regardless
         let got = explicit::escape_str(input).collect::<String>();
         assert_eq!(got, want);
 
@@ -1889,7 +1758,7 @@ mod tests {
         // Help display
         assert_display(unescape(input).display_utf8(), Ok(want));
 
-        // FIXME: Once logic is unified, remove this.
+        // Let's test explicit regardless
         let got = explicit::unescape(input).decode_utf8().unwrap();
         assert_eq!(got, want);
 
@@ -1933,7 +1802,7 @@ mod tests {
             _ => panic!("expected invalid escape"),
         }
 
-        // FIXME: Once logic is unified, remove this.
+        // Let's test explicit regardless
         let mut u = explicit::unescape(s);
 
         match u.next() {
@@ -1971,7 +1840,7 @@ mod tests {
         }
         assert!(found);
 
-        // FIXME: Once logic is unified, remove this.
+        // Let's test explicit regardless
         assert_eq!(
             explicit::unescape(input).next(),
             Some(Err(UnescapeError {
@@ -2082,6 +1951,52 @@ mod tests {
     }
 
     // ===================== Unescape Read ===================== //
+    #[test]
+    fn bytes_provenance() {
+        // Input chosen so we hit the "final literal" branch and then try to backtrack.
+        let input = b"hello";
+        let mut iter = explicit::unescape(input);
+
+        // First call yields the entire "hello" as one literal chunk.
+        let chunk = iter.next().unwrap().unwrap();
+        assert_eq!(chunk.literal, b"hello");
+
+        // At this point, before the fix, `iter.bytes` would have been set to `&[]`
+        // (not tied to `input`), so later pointer arithmetic could underflow.
+        // After the fix, `iter.bytes` is `&input[input.len()..]`, which is safe.
+        assert!(core::ptr::eq(iter.bytes, &input[input.len()..]));
+
+        // -- ESCAPE --
+        let input = "hello";
+        let mut iter = explicit::escape_str(input);
+
+        // First call yields the entire "hello" as one literal chunk.
+        let chunk = iter.next().unwrap();
+        assert_eq!(chunk.literal(), "hello");
+
+        // At this point, before the fix, `iter.bytes` would have been set to `&[]`
+        // (not tied to `input`), so later pointer arithmetic could underflow.
+        // After the fix, `iter.bytes` is `&input[input.len()..]`, which is safe.
+        assert!(core::ptr::eq(
+            unsafe { str::from_utf8_unchecked(iter.bytes) },
+            &input[input.len()..]
+        ));
+
+        // -- ESCAPE --
+        let mut iter = escape_str(input);
+
+        // First call yields the entire "hello" as one literal chunk.
+        let chunk = iter.next().unwrap();
+        assert_eq!(chunk, "hello");
+
+        // At this point, before the fix, `iter.bytes` would have been set to `&[]`
+        // (not tied to `input`), so later pointer arithmetic could underflow.
+        // After the fix, `iter.bytes` is `&input[input.len()..]`, which is safe.
+        assert!(core::ptr::eq(
+            unsafe { str::from_utf8_unchecked(iter.bytes) },
+            &input[input.len()..]
+        ))
+    }
 
     #[test]
     fn test_read_simple() {
@@ -2370,15 +2285,15 @@ mod tests {
     #[test]
     fn test_display_lossy_invalid_escape_truncates() {
         // In lossy mode, an invalid JSON escape stops the processing.
-        let input = br"this is ok\z but this is not";
-        let expected = "this is ok";
+        let input = br"this is ok \n but this is not \z";
+        let expected = "this is ok \n";
         assert_display(unescape(input).display_utf8_lossy(), Ok(expected));
     }
 
     #[test]
     fn test_display_lossy_incomplete_unicode_truncates() {
-        let input = br"truncate here \uD83D";
-        let expected = "truncate here ";
+        let input = br"truncate after \n \uD83D";
+        let expected = "truncate after \n";
         assert_display(unescape(input).display_utf8_lossy(), Ok(expected));
     }
 

@@ -3,6 +3,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-09-26
+
+### Fixed
+
+  * **Prevented pointer provenance loss in iterators** (`unescape` and `escape`). The internal state slice (`self.bytes`) now correctly points to an empty subslice of the original input buffer after completion. This prevents potential pointer arithmetic underflow and Undefined Behavior (UB).
+
+### Refactoring
+
+  * Major internal refactoring of the `unescape` implementation. The core logic has been moved from `lib.rs` into **`explicit.rs`**, and the public `unescape` functions now use the faster, dedicated **`explicit::Unescape`** iterator. This improves code organization and developer focus.
+
+### ⚠️ Breaking Change (Behavioral)
+
+  * **Error state truncation is now immediate** when using **`.display_utf8_lossy()`** after encountering an invalid escape sequence (e.g., `\z`, incomplete Unicode).
+      * Previously, the iterator could yield some leading, successfully unescaped data before the error stopped processing, allowing partial data to be displayed.
+      * The new, optimized iterator structure stops processing immediately upon error discovery, resulting in **no partial data** being yielded or displayed.
+
 ## [0.1.3] - 2025-09-26
 
 ### Fixed

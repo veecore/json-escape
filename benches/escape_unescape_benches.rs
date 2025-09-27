@@ -300,12 +300,9 @@ fn nested_json_benchmarks(c: &mut Criterion) {
             },
         );
 
-        // --- Method 2: Streaming with json_escape (Your Optimal Way) ---
+        // --- Method 2: Streaming with json_escape ---
         // This method uses `unescape_quoted` as a `Read` adapter, allowing `serde_json`
         // to parse the unescaped bytes on the fly without an intermediate string.
-        //
-        // NOTE: Turned out to be slower. Why? serde_json::from_reader is not as optimized
-        // as serde_json::from_str
         group.bench_with_input(
             BenchmarkId::new("Streaming (json_escape)", size),
             &nested_json,
