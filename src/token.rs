@@ -251,9 +251,7 @@ impl<'a> EscapeTokens<'a> {
             }
         }
 
-        // Runtime feature check: only call the SSE2-targeted function when the CPU supports it.
-        // This avoids undefined behaviour on CPUs without SSE2 even if the function was compiled.
-        if std::is_x86_feature_detected!("sse2") {
+        if cfg!(target_feature = "sse2") {
             // Main loop (vectorized)
             while i + LANES <= bytes.len() {
                 // Safety: calling `find_in_chunk` is safe here because:
