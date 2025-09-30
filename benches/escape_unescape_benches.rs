@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use json_escape::{escape_str, explicit, unescape, unescape_quoted};
+use json_escape::{escape_str, explicit, token, unescape, unescape_quoted};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ const UNICODE_ESCAPES_RAW: &str = r#"Unicode test: éàçüö. Emoji: 😀. More
 const UNICODE_ESCAPES_ESCAPED: &str = r#"Unicode test: \u00e9\u00e0\u00e7\u00fc\u00f6. Emoji: \uD83D\uDE00. More symbols: \u2764\uFE0F\u2705."#;
 
 fn benchmark_find_escape_char(c: &mut Criterion) {
-    use json_escape::{ESCAPE_DECISION_TABLE, find_escape_char};
+    use json_escape::{token::ESCAPE_DECISION_TABLE, token::EscapeTokens};
 
     let mut group = c.benchmark_group("Find Escape Char");
 
@@ -37,7 +37,7 @@ fn benchmark_find_escape_char(c: &mut Criterion) {
     .iter()
     {
         group.bench_with_input(*id, input, |b, i| {
-            b.iter(|| black_box(find_escape_char(black_box(i.as_bytes()))))
+            b.iter(|| black_box(EscapeTokens::find_escape_char(black_box(i.as_bytes()))))
         });
 
         group.bench_with_input(format!("Plain/{id}"), input, |b, i| {
@@ -83,6 +83,17 @@ macro_rules! benchmark_pair {
             |$b, &$i| {
                 // In this scope, `api_fn` is the explicit version (e.g., `explicit::escape_str`)
                 let $api_fn = explicit::$func_name;
+                $body
+            },
+        );
+
+        // --- Benchmark the explicit API ---
+        $group.bench_with_input(
+            BenchmarkId::new(format!("{}/Token", $bench_name), $input_id),
+            $input_val,
+            |$b, &$i| {
+                // In this scope, `api_fn` is the explicit version (e.g., `explicit::escape_str`)
+                let $api_fn = token::$func_name;
                 $body
             },
         );

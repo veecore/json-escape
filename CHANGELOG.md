@@ -1,7 +1,27 @@
+# Changelog
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),  
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0] - 2025-09-30
+
+### 🎉 Added
+
+* **Streaming Unescape API**: A new `stream` module provides the `UnescapeStream` struct for high-performance, allocation-free processing of chunked byte slices. It's perfect for I/O-bound applications as it correctly handles escape sequences that are split across buffer boundaries.
+* **Low-Level Token API**: A new `token` module introduces a granular, iterator-based API (`UnescapeTokens` and `EscapeTokens`). This provides a more flexible, zero-copy foundation for building custom string processors.
+
+### 🚀 Performance
+
+* **SWAR-based Escape Finding**: Replaced the byte-by-byte scan with a SWAR (SIMD Within A Register) algorithm, making escape detection significantly faster in common scenarios:
+    * **~2.5× faster** on strings with no escapes.
+    * **~1.8× faster** on strings with sparse escapes.
+    * **~2.2× faster** on typical Unicode-heavy strings.
+
+### 🐞 Fixed
+
+* **Corrected EOF in Surrogate Pairs**: Fixed a bug where an incomplete surrogate pair at the end of the input (e.g., `\uD83D\u`) was incorrectly reported as a `LoneSurrogate` error. It is now correctly identified as an `UnexpectedEof` error, with regression tests to prevent recurrence.
 
 ## [0.2.0] - 2025-09-26
 

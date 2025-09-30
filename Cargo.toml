@@ -1,10 +1,10 @@
 [package]
 name = "json-escape"
 description = "A highly ergonomic, well-tested, no_std library for streaming JSON string escaping and unescaping. It processes JSON strings with zero-copy slicing and no intermediate allocations, ensuring both high performance and RFC-compliant correctness, ideal for I/O and memory-constrained environments."
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Victor <victorayo206@example.com>"]
-rust-version = "1.85"
+rust-version = "1.87"
 license = "MIT"
 homepage = "https://github.com/veecore/json-escape"
 documentation = "https://docs.rs/json-escape/"
@@ -19,7 +19,6 @@ keywords = [
 exclude = [
     "/.github",
     "/benches",
-    "/src/stream.rs",
 ]
 
 [dependencies]
@@ -41,3 +40,19 @@ serde_json = {version = "1.0", features = ["raw_value"]}
 [[bench]]
 name = "escape_unescape_benches"
 harness = false
+
+[[example]]
+name = "simple_unescape"
+path = "examples/simple_unescape.rs"
+
+[[example]]
+name = "stream_file"
+path = "examples/stream_file.rs"
+
+[[example]]
+name = "zero_copy_serde"
+path = "examples/zero_copy_serde.rs"
+
+[[example]]
+name = "custom_processor_tokens"
+path = "examples/custom_processor_tokens.rs"

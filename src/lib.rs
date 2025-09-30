@@ -65,6 +65,7 @@
 //! using the `explicit` module for a potential performance boost.
 #![no_std]
 #![deny(missing_docs)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![cfg_attr(all(feature = "simd", nightly), feature(portable_simd))]
 
 #[cfg(any(test, feature = "std"))]
@@ -75,6 +76,7 @@ extern crate alloc;
 
 #[cfg(any(test, feature = "alloc"))]
 use alloc::{borrow::Cow, string::String, vec::Vec};
+use token::EscapeTokens;
 
 use core::{
     char,
@@ -84,6 +86,8 @@ use core::{
 };
 
 pub mod explicit;
+pub mod stream;
+pub mod token;
 
 // =============================================================================
 // Escape Implementation
@@ -107,7 +111,7 @@ pub mod explicit;
 #[inline]
 pub fn escape_str(input: &str) -> Escape<'_> {
     Escape {
-        bytes: input.as_bytes(),
+        inner: EscapeTokens::new(input),
     }
 }
 
@@ -133,61 +137,19 @@ pub fn escape_str(input: &str) -> Escape<'_> {
 #[derive(Clone)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub struct Escape<'a> {
-    bytes: &'a [u8],
+    inner: EscapeTokens<'a>,
 }
 
 impl<'a> Iterator for Escape<'a> {
     type Item = &'a str;
 
-    #[inline]
+    #[inline(always)]
     fn next(&mut self) -> Option<&'a str> {
-        if self.bytes.is_empty() {
-            return None;
-        }
-
-        // Find the first byte that needs escaping.
-        let pos = find_escape_char(self.bytes);
-
-        match pos {
-            // No escapable characters left; return the rest of the slice.
-            None => {
-                let s = self.bytes;
-                self.bytes = &self.bytes[self.bytes.len()..];
-                // SAFETY: The input was a valid &str, and we're returning the
-                // whole remaining chunk, so it's still valid UTF-8.
-                Some(unsafe { str::from_utf8_unchecked(s) })
-            }
-            // An escapable byte is at the beginning of the slice.
-            Some(0) => {
-                let byte = self.bytes[0];
-                self.bytes = &self.bytes[1..];
-                // The table lookup gives us a &'static str, which is a valid &'a str.
-                //
-                // Some(....unwrap()) is more correct
-                ESCAPE_TABLE[byte as usize]
-            }
-            // Found an escapable byte after a safe prefix. Return the prefix.
-            Some(p) => {
-                let (prefix, rest) = self.bytes.split_at(p);
-                self.bytes = rest;
-                // SAFETY: The soundness of this operation is critical.
-                // We are splitting the byte slice at the position of the first
-                // character that requires escaping. All JSON characters that
-                // require escaping (`"`, `\`, and control characters `\u0000`-`\u001F`)
-                // are single-byte ASCII characters. Therefore, `p` is guaranteed
-                // to be on a valid UTF-8 character boundary.
-                Some(unsafe { str::from_utf8_unchecked(prefix) })
-            }
-        }
+        self.inner.next().map(|s| s.as_str())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.bytes.is_empty() {
-            (0, Some(0))
-        } else {
-            // We'll yield at least 1 slice, and at most `len` slices if every byte is escaped.
-            (1, Some(self.bytes.len()))
-        }
+        self.inner.size_hint()
     }
 }
 
@@ -209,12 +171,9 @@ impl fmt::Display for Escape<'_> {
     ///
     /// assert_eq!(formatted, r#"User said: \"Hi!\"\n"#);
     /// ```
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The `clone()` is cheap as it only copies a slice reference.
-        for s in self.clone() {
-            f.write_str(s)?
-        }
-        Ok(())
+        fmt::Display::fmt(&self.inner, f)
     }
 }
 
@@ -262,7 +221,7 @@ impl<'a, 'b> PartialEq<Escape<'a>> for Escape<'b> {
     /// It first performs a fast check on the underlying byte slices.
     fn eq(&self, other: &Escape<'a>) -> bool {
         // Fast path: if they are views into the same underlying data.
-        self.bytes == other.bytes || chunks_eq(self.clone(), other.clone())
+        self.inner.bytes == other.inner.bytes || chunks_eq(self.clone(), other.clone())
     }
 }
 
@@ -297,21 +256,8 @@ impl<'a> From<Escape<'a>> for Cow<'a, str> {
     /// assert_eq!(cow_owned, r#"text with\nnewline"#);
     /// # }
     /// ```
-    fn from(mut iter: Escape<'a>) -> Self {
-        match iter.next() {
-            None => Cow::Borrowed(""),
-            Some(first) => match iter.next() {
-                None => Cow::Borrowed(first),
-                Some(second) => {
-                    let mut string =
-                        String::with_capacity(first.len() + second.len() + iter.bytes.len());
-                    string.push_str(first);
-                    string.push_str(second);
-                    string.extend(iter);
-                    Cow::Owned(string)
-                }
-            },
-        }
+    fn from(iter: Escape<'a>) -> Self {
+        iter.inner.into()
     }
 }
 
@@ -573,7 +519,8 @@ impl<'a> Unescape<'a> {
     #[inline]
     fn emit_unicode_as_str(&mut self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The check `unicode_pos > 0` is implicit from the call site.
-        // The buffer is guaranteed to contain a valid UTF-8 sequence.
+        //
+        // SAFETY: The buffer is guaranteed to contain a valid UTF-8 sequence.
         let s = unsafe { str::from_utf8_unchecked(&self.unicode[..self.unicode_len as usize]) };
         f.write_str(s)?;
 
@@ -745,13 +692,6 @@ impl<'a> Iterator for Unescape<'a> {
             Some(Err(err)) => Some(Err(err)),
             None => None,
         }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // The maximum size is the remaining length of the underlying iter + pending_unicode
-        let (lower, upper) = self.inner.size_hint();
-        let upper = upper.map(|x| x + (self.unicode_len as usize));
-        (lower, upper)
     }
 }
 
@@ -1319,281 +1259,6 @@ impl core::error::Error for DecodeUtf8Error {
 // Utilities
 // =============================================================================
 
-// A const lookup table for JSON escape sequences.
-// Maps a byte to its escaped `&'static str` representation.
-// `None` indicates the byte does not need to be escaped.
-const ESCAPE_TABLE: [Option<&'static str>; 256] = {
-    let mut table: [Option<&'static str>; 256] = [None; 256];
-
-    // Special characters
-    table[b'"' as usize] = Some(r#"\""#);
-    table[b'\\' as usize] = Some(r#"\\"#);
-
-    // Common control characters with short escapes
-    table[0x08] = Some(r#"\b"#); // Backspace
-    table[0x09] = Some(r#"\t"#); // Tab
-    table[0x0A] = Some(r#"\n"#); // Line Feed
-    table[0x0C] = Some(r#"\f"#); // Form Feed
-    table[0x0D] = Some(r#"\r"#); // Carriage Return
-
-    // The rest of the control characters must be `\uXXXX` encoded.
-    // We can pre-calculate and store all of them as static strings.
-    table[0x00] = Some(r#"\u0000"#);
-    table[0x01] = Some(r#"\u0001"#);
-    table[0x02] = Some(r#"\u0002"#);
-    table[0x03] = Some(r#"\u0003"#);
-    table[0x04] = Some(r#"\u0004"#);
-    table[0x05] = Some(r#"\u0005"#);
-    table[0x06] = Some(r#"\u0006"#);
-    table[0x07] = Some(r#"\u0007"#);
-    // 0x08 to 0x0D are already handled above
-    table[0x0B] = Some(r#"\u000b"#);
-    table[0x0E] = Some(r#"\u000e"#);
-    table[0x0F] = Some(r#"\u000f"#);
-    table[0x10] = Some(r#"\u0010"#);
-    table[0x11] = Some(r#"\u0011"#);
-    table[0x12] = Some(r#"\u0012"#);
-    table[0x13] = Some(r#"\u0013"#);
-    table[0x14] = Some(r#"\u0014"#);
-    table[0x15] = Some(r#"\u0015"#);
-    table[0x16] = Some(r#"\u0016"#);
-    table[0x17] = Some(r#"\u0017"#);
-    table[0x18] = Some(r#"\u0018"#);
-    table[0x19] = Some(r#"\u0019"#);
-    table[0x1A] = Some(r#"\u001a"#);
-    table[0x1B] = Some(r#"\u001b"#);
-    table[0x1C] = Some(r#"\u001c"#);
-    table[0x1D] = Some(r#"\u001d"#);
-    table[0x1E] = Some(r#"\u001e"#);
-    table[0x1F] = Some(r#"\u001f"#);
-
-    table
-};
-
-// Not public API. Exposed for test
-#[doc(hidden)]
-// A simple boolean-like lookup table for SIMD.
-// 0 = no escape needed, 1 = escape needed.
-// This is very compact (256 bytes) and fits easily in the L1 cache.
-#[allow(unused)]
-pub const ESCAPE_DECISION_TABLE: [u8; 256] = {
-    let mut table = [0u8; 256];
-    let mut i = 0;
-    while i < 256 {
-        if ESCAPE_TABLE[i].is_some() {
-            table[i] = 1;
-        }
-        i += 1;
-    }
-    table
-};
-
-// Not public API. Exposed for test
-#[doc(hidden)]
-// This is the SIMD version, compiled only when the "simd" feature is enabled on nightly build.
-#[cfg(all(feature = "simd", nightly))]
-#[inline]
-pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    use std::simd::{Simd, prelude::SimdPartialEq, prelude::SimdPartialOrd};
-
-    const LANES: usize = 16; // Process 16 bytes at a time (fits in SSE2/AVX)
-    let mut i = 0;
-
-    // SIMD main loop
-    while i + LANES <= bytes.len() {
-        // Load 16 bytes from the slice into a SIMD vector.
-        let chunk = Simd::<u8, LANES>::from_slice(&bytes[i..]);
-
-        // Create comparison vectors. These are effectively 16 copies of the byte.
-        let space_v = Simd::splat(b' ' - 1); // For the < ' ' check (i.e., <= 0x1F)
-        let quote_v = Simd::splat(b'"');
-        let slash_v = Simd::splat(b'\\');
-
-        // Perform all 16 comparisons at once. The result is a mask.
-        let lt_space_mask = chunk.simd_le(space_v);
-        let eq_quote_mask = chunk.simd_eq(quote_v);
-        let eq_slash_mask = chunk.simd_eq(slash_v);
-
-        // Combine the masks. A byte needs escaping if ANY of the conditions are true.
-        let combined_mask = lt_space_mask | eq_quote_mask | eq_slash_mask;
-
-        // Check if any lane in the combined mask is true.
-        if combined_mask.any() {
-            // If yes, find the index of the *first* true lane.
-            // trailing_zeros() on the bitmask gives us this index directly.
-            let first_match_index = combined_mask.to_bitmask().trailing_zeros() as usize;
-            return Some(i + first_match_index);
-        }
-
-        i += LANES;
-    }
-
-    // Handle the remaining bytes (if any) with the simple iterator method.
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
-
-    None
-}
-
-// Not public API. Exposed for test
-#[doc(hidden)]
-#[cfg(all(feature = "simd", not(nightly), target_arch = "x86_64"))]
-#[inline]
-pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    // This is the stable Rust path using explicit CPU intrinsics.
-    // It's guarded by cfg flags to only compile on x86_64 with the simd feature.
-    use std::arch::x86_64::*;
-
-    let mut i = 0;
-    const LANES: usize = 16; // SSE2 works on 128-bit registers, which is 16 bytes.
-
-    // On x86_64, we can tell the compiler to use SSE2 features in this specific function.
-    // This is safe because we've already checked the target architecture.
-    #[target_feature(enable = "sse2")]
-    unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
-        // Load 16 bytes of data from the slice.
-        let chunk = unsafe { _mm_loadu_si128(bytes.as_ptr().add(i) as *const _) };
-
-        // Create comparison vectors for quote and slash.
-        let quote_v = _mm_set1_epi8(b'"' as i8);
-        let slash_v = _mm_set1_epi8(b'\\' as i8);
-
-        // Emulate unsigned comparison for control characters
-        // Create a vector with the value 0x80 in each lane.
-        let bias = _mm_set1_epi8(0x80u8 as i8);
-        // Create the comparison vector for bytes < 0x20 (' ').
-        let space_v = _mm_set1_epi8(b' ' as i8);
-
-        // Bias both the input chunk and the comparison vector by XORing with 0x80.
-        let biased_chunk = _mm_xor_si128(chunk, bias);
-        let biased_space_v = _mm_xor_si128(space_v, bias);
-
-        // Now, a signed less-than comparison on the biased values gives the
-        // same result as an unsigned less-than on the original values.
-        let lt_space_mask = _mm_cmplt_epi8(biased_chunk, biased_space_v);
-
-        // Perform the equality comparisons (these are unaffected by signedness).
-        let eq_quote_mask = _mm_cmpeq_epi8(chunk, quote_v);
-        let eq_slash_mask = _mm_cmpeq_epi8(chunk, slash_v);
-
-        // Combine the results.
-        let combined_mask = _mm_or_si128(lt_space_mask, _mm_or_si128(eq_quote_mask, eq_slash_mask));
-
-        // Create a bitmask to find the first match.
-        let mask = _mm_movemask_epi8(combined_mask);
-
-        if mask != 0 {
-            Some(i + mask.trailing_zeros() as usize)
-        } else {
-            None
-        }
-    }
-    // Main loop
-    while i + LANES <= bytes.len() {
-        if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
-            return Some(result);
-        }
-        i += LANES;
-    }
-
-    // Handle the remainder with the fast scalar lookup.
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
-
-    None
-}
-
-// Not public API. Exposed for test
-// A fallback for when SIMD feature is off.
-#[doc(hidden)]
-#[cfg(not(feature = "simd"))]
-#[inline]
-pub fn find_escape_char(bytes: &[u8]) -> Option<usize> {
-    use core::mem::size_of;
-
-    const WORD_SIZE: usize = size_of::<usize>();
-    const THRESH: u8 = 0x20; // control threshold
-
-    // helper: repeat a byte across a usize (works for any usize width)
-    const fn repeat(b: u8) -> usize {
-        let mut m: usize = 0;
-        let mut i = 0;
-        while i < WORD_SIZE {
-            m = (m << 8) | (b as usize);
-            i += 1;
-        }
-        m
-    }
-
-    // Precompute masks as constants
-    const ONE_MASK: usize = repeat(0x01);
-    const MSB_MASK: usize = repeat(0x80);
-    const QUOTE_MASK: usize = repeat(b'"');
-    const SLASH_MASK: usize = repeat(b'\\');
-    const THR_MASK: usize = repeat(THRESH);
-
-    let mut i = 0usize;
-    while i + WORD_SIZE <= bytes.len() {
-        // SAFETY: we checked bounds; read_unaligned is allowed for any alignment.
-        let word = unsafe { (bytes.as_ptr().add(i) as *const usize).read_unaligned() };
-
-        // equality tests (SWAR zero-byte detection on XOR)
-        let xq = word ^ QUOTE_MASK;
-        let quote_bits = (xq.wrapping_sub(ONE_MASK) & !xq) & MSB_MASK;
-
-        let xs = word ^ SLASH_MASK;
-        let slash_bits = (xs.wrapping_sub(ONE_MASK) & !xs) & MSB_MASK;
-
-        // control: detect bytes < 0x20 using subtract+~word+msb trick
-        // If any byte b satisfies b < 0x20 then the corresponding MSB bit in control_bits is set.
-        let control_bits = (word.wrapping_sub(THR_MASK) & !word) & MSB_MASK;
-
-        // combined mask: MSB-bit set per candidate byte
-        let combined = quote_bits | slash_bits | control_bits;
-
-        if combined != 0 {
-            // Find earliest matching byte inside this word in a portable way:
-            // - on little-endian the least-significant set bit corresponds to the earliest byte
-            // - on big-endian the most-significant set bit corresponds to the earliest byte
-            let byte_index = if cfg!(target_endian = "little") {
-                (combined.trailing_zeros() as usize) / 8
-            } else {
-                (combined.leading_zeros() as usize) / 8
-            };
-            return Some(i + byte_index);
-        }
-
-        i += WORD_SIZE;
-    }
-
-    // tail bytes
-    if i < bytes.len() {
-        if let Some(pos) = bytes[i..]
-            .iter()
-            .position(|&b| ESCAPE_DECISION_TABLE[b as usize] != 0)
-        {
-            return Some(i + pos);
-        }
-    }
-
-    None
-}
-
-#[cfg(all(feature = "simd", not(nightly), not(target_arch = "x86_64")))]
-compile_error! { "simd requires nightly or target_arch = \"x86_64\"" }
-
 /// Static table mapping every u8 -> a &'static [u8] of length 1.
 /// This lets us return a `'static` slice for any single byte cheaply.
 const U8_TABLE: [[u8; 1]; 256] = {
@@ -1639,7 +1304,7 @@ fn decode_utf8_lossy(input: Cow<'_, [u8]>) -> Cow<'_, str> {
                     let raw_utf8: *const [u8] = utf8.as_bytes();
                     debug_assert!(core::ptr::eq(raw_utf8, &*bytes));
 
-                    // Given we know the original input bytes are valid UTF-8,
+                    // SAFETY: Given we know the original input bytes are valid UTF-8,
                     // and we have ownership of those bytes, we re-use them and
                     // return a Cow::Owned here.
                     Cow::Owned(unsafe { String::from_utf8_unchecked(bytes) })
@@ -1739,7 +1404,7 @@ mod tests {
         assert_eq!(got, want);
 
         // Test PartialEq too
-        assert_eq!(escape_str(input), want)
+        assert_eq!(explicit::escape_str(input), want)
     }
 
     #[test]
@@ -2051,6 +1716,7 @@ mod tests {
         // (not tied to `input`), so later pointer arithmetic could underflow.
         // After the fix, `iter.bytes` is `&input[input.len()..]`, which is safe.
         assert!(core::ptr::eq(
+            // SAFETY: input is string
             unsafe { str::from_utf8_unchecked(iter.bytes) },
             &input[input.len()..]
         ));
@@ -2066,7 +1732,8 @@ mod tests {
         // (not tied to `input`), so later pointer arithmetic could underflow.
         // After the fix, `iter.bytes` is `&input[input.len()..]`, which is safe.
         assert!(core::ptr::eq(
-            unsafe { str::from_utf8_unchecked(iter.bytes) },
+            // SAFETY: input is string
+            unsafe { str::from_utf8_unchecked(iter.inner.bytes) },
             &input[input.len()..]
         ))
     }
@@ -2378,142 +2045,5 @@ mod tests {
         fn assert_send_sync<T: Send + Sync + UnwindSafe + RefUnwindSafe>() {}
         assert_send_sync::<Unescape<'_>>();
         assert_send_sync::<Escape<'_>>();
-    }
-}
-
-#[cfg(test)]
-mod find_escape_char_tests {
-    use std::format;
-
-    use super::{ESCAPE_DECISION_TABLE, find_escape_char};
-
-    /// Helper function to run a single test case and provide a clear error message on failure.
-    fn run_test(input: &str, expected: Option<usize>, case_name: &str) {
-        let result = find_escape_char(input.as_bytes());
-        assert_eq!(result, expected, "Failed test case: '{}'", case_name);
-    }
-
-    #[test]
-    fn test_no_escapes() {
-        run_test("", None, "Empty string");
-        run_test("Hello, world!", None, "Simple ASCII");
-        run_test("This string is exactly 16 bytes", None, "16-byte ASCII");
-        run_test(
-            "This string is over 16 bytes long now",
-            None,
-            "Over 16-byte ASCII",
-        );
-
-        // The original source of the bug: non-ASCII UTF-8 characters.
-        // This ensures the signedness bug is truly fixed.
-        run_test("Hello, éàçüö!", None, "Non-ASCII UTF-8");
-        run_test("Testing with emojis 😀❤️✅", None, "Emojis");
-    }
-
-    #[test]
-    fn test_single_escapes() {
-        run_test("\"", Some(0), "Quote at start");
-        run_test("Hello \" world", Some(6), "Quote in middle");
-        run_test("Hello\\", Some(5), "Backslash at end");
-        run_test("\n", Some(0), "Control char (newline) at start");
-        run_test("Hello\tworld", Some(5), "Control char (tab) in middle");
-        run_test(
-            "Control char at end\u{08}",
-            Some(19),
-            "Control char (backspace) at end",
-        );
-    }
-
-    #[test]
-    fn test_finds_first_of_multiple() {
-        // This confirms it always finds the *first* match, not a later one.
-        run_test("a\"b\\c\nd", Some(1), "Finds first quote");
-        run_test("ab\\c\"d\ne", Some(2), "Finds first backslash");
-        run_test("abc\nd\"e\\f", Some(3), "Finds first control char");
-        run_test("\"\n\\", Some(0), "Multiple escapes at start");
-    }
-
-    #[test]
-    fn test_simd_chunk_boundaries() {
-        // These tests are critical for verifying the SIMD logic. A chunk is 16 bytes.
-        let s15 = "a".repeat(15);
-        let s16 = "a".repeat(16);
-        let s17 = "a".repeat(17);
-
-        // Escape at the exact end of the first 16-byte chunk
-        run_test(&format!("{}\"", s15), Some(15), "Escape at index 15");
-
-        // Escape at the exact start of the second 16-byte chunk
-        run_test(&format!("{}\n", s16), Some(16), "Escape at index 16");
-
-        // Escape within the second chunk
-        run_test(&format!("{}\t", s17), Some(17), "Escape at index 17");
-
-        // A long string with an escape several chunks in
-        let long = "a".repeat(40);
-        run_test(
-            &format!("{}\\\\", long),
-            Some(40),
-            "Escape deep in a long string",
-        );
-    }
-
-    #[test]
-    fn test_remainder_logic() {
-        // These tests ensure the scalar fallback logic works correctly for inputs
-        // that are not a multiple of 16 bytes long.
-
-        // String shorter than 16 bytes
-        run_test("short\nstring", Some(5), "Short string with escape");
-        run_test("no escapes", None, "Short string no escape");
-
-        // String with 17 bytes (16 for SIMD, 1 for remainder)
-        let s16 = "a".repeat(16);
-        run_test(
-            &format!("{}\"", s16),
-            Some(16),
-            "Escape in 1-byte remainder",
-        );
-
-        // String with 31 bytes (16 for SIMD, 15 for remainder)
-        let s15 = "b".repeat(15);
-        run_test(
-            &format!("{}{}\t", s15, s15),
-            Some(30),
-            "Escape at end of 15-byte remainder",
-        );
-    }
-
-    #[test]
-    fn test_all_escapable_bytes_individually() {
-        // This is the ultimate test. It iterates through all 256 possible byte values
-        // and confirms that our function's decision matches the ESCAPE_DECISION_TABLE.
-        let prefix = "0123456789abcdef"; // A 16-byte safe prefix to engage the SIMD loop.
-
-        for byte_val in 0..=255u8 {
-            // We can't create a &str from invalid UTF-8, so we work with byte slices.
-            let mut test_bytes = prefix.as_bytes().to_vec();
-            test_bytes.push(byte_val);
-
-            let result = find_escape_char(&test_bytes);
-            let expected_to_escape = ESCAPE_DECISION_TABLE[byte_val as usize] == 1;
-
-            if expected_to_escape {
-                // If this byte SHOULD be escaped, we expect to find it at index 16.
-                assert_eq!(
-                    result,
-                    Some(16),
-                    "Failed to find required escape for byte 0x{:02X}",
-                    byte_val
-                );
-            } else {
-                // If this byte should NOT be escaped, we expect to find nothing.
-                assert_eq!(
-                    result, None,
-                    "Incorrectly found an escape for byte 0x{:02X}",
-                    byte_val
-                );
-            }
-        }
     }
 }

@@ -62,8 +62,8 @@
 
 #[cfg(feature = "alloc")]
 use crate::DecodeUtf8Error;
-use crate::{ESCAPE_TABLE, InvalidHexError, LoneSurrogateError, UnescapeError, display_bytes_utf8};
-use crate::{InvalidEscapeError, UnescapeErrorKind, find_escape_char};
+use crate::token::{EscapeTokens, UnescapeTokens};
+use crate::{UnescapeError, display_bytes_utf8};
 use core::fmt;
 use core::iter::FusedIterator;
 use core::str;
@@ -140,39 +140,28 @@ impl<'a> Iterator for Escape<'a> {
             return None;
         }
 
-        let pos = find_escape_char(self.bytes).unwrap_or(self.bytes.len());
-        let (literal_bytes, rest) = self.bytes.split_at(pos);
+        // SAFETY: Input is string
+        let (literal, rest) = unsafe { EscapeTokens::split_at_escape(self.bytes) };
 
-        // SAFETY: `find_escape_char` guarantees `pos` is on a UTF-8 boundary.
-        let literal = unsafe { str::from_utf8_unchecked(literal_bytes) };
-
-        if rest.is_empty() {
-            self.bytes = &self.bytes[self.bytes.len()..];
-            Some(EscapedChunk {
-                literal,
-                escaped: None,
-            })
-        } else {
-            let escaped_char_byte = rest[0];
-            self.bytes = &rest[1..];
-            Some(EscapedChunk {
-                literal,
-                escaped: Some(
-                    ESCAPE_TABLE[escaped_char_byte as usize]
-                        .expect("find_escape_char found a byte not in ESCAPE_TABLE"),
-                ),
-            })
-        }
+        Some(EscapedChunk {
+            literal,
+            escaped: {
+                if rest.is_empty() {
+                    self.bytes = rest;
+                    None
+                } else {
+                    // An escapable byte is at the beginning of the slice.
+                    self.bytes = &rest[1..];
+                    Some(
+                        EscapeTokens::escape(rest[0])
+                            .expect("find_escape_char found a byte not in ESCAPE_TABLE"),
+                    )
+                }
+            },
+        })
     }
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.bytes.is_empty() {
-            (0, Some(0))
-        } else {
-            // We'll yield at least 1 chunk, and at most `len` chunks if every byte is escaped.
-            (1, Some(self.bytes.len()))
-        }
-    }
+    // TODO: size_hint
 }
 
 impl<'a> FusedIterator for Escape<'a> {}
@@ -227,7 +216,11 @@ impl<'a, 'b> PartialEq<Escape<'a>> for Escape<'b> {
     /// It first performs a fast check on the underlying byte slices.
     fn eq(&self, other: &Escape<'a>) -> bool {
         // The crate parallel is easier
-        crate::Escape { bytes: self.bytes } == crate::Escape { bytes: other.bytes }
+        crate::Escape {
+            inner: EscapeTokens { bytes: self.bytes },
+        } == crate::Escape {
+            inner: EscapeTokens { bytes: other.bytes },
+        }
     }
 }
 
@@ -248,7 +241,9 @@ impl<'a> From<Escape<'a>> for Cow<'a, str> {
                     Cow::Borrowed(first.literal)
                 } else {
                     // Escaping occurred. We must allocate.
-                    let mut s = String::with_capacity(iter.bytes.len() + 16);
+                    let mut s = String::with_capacity(
+                        first.literal.len() + first.escaped.unwrap().len() + iter.bytes.len(),
+                    );
                     s.push_str(first.literal);
                     s.push_str(first.escaped.unwrap());
                     s.extend(iter);
@@ -389,95 +384,6 @@ pub struct Unescape<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
-impl<'a> Iterator for Unescape<'a> {
-    type Item = Result<UnescapedChunk<'a>, UnescapeError>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        use memchr::memchr;
-
-        if self.bytes.is_empty() {
-            return None;
-        }
-
-        let pos = match memchr(b'\\', self.bytes) {
-            Some(p) => p,
-            None => {
-                // No more backslashes, yield the rest as a final literal chunk.
-                let chunk = UnescapedChunk {
-                    literal: self.bytes,
-                    unescaped: None,
-                };
-                self.bytes = &self.bytes[self.bytes.len()..]; // fix: totalk
-                return Some(Ok(chunk));
-            }
-        };
-
-        let (literal, rest) = self.bytes.split_at(pos);
-        // rest starts with '\\'
-        let mut remainder = &rest[1..];
-
-        let unescaped_char = match remainder.first() {
-            Some(b'u') => {
-                // Temporarily advance past 'u'
-                remainder = &remainder[1..];
-                // Use a helper from the main unescaper, giving it a mutable slice reference
-                // that it can advance.
-                match Self::handle_unicode_escape(&mut remainder) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        // FIX: handle_unicode_escape_from_slice already handles this for us.
-                        // Adjust offset: error is relative to `\u`, but we need it relative to chunk start.
-                        return Some(Err(e));
-                    }
-                }
-            }
-            Some(&byte) => {
-                remainder = &remainder[1..];
-                match UNESCAPE_TABLE[byte as usize] {
-                    Some(c) => c,
-                    None => {
-                        return Some(Err(UnescapeError {
-                            kind: UnescapeErrorKind::InvalidEscape(InvalidEscapeError {
-                                found: byte,
-                            }),
-                            // The invalid character is 1 byte after '\'.
-                            offset: 1,
-                        }));
-                    }
-                }
-            }
-            None => {
-                return Some(Err(UnescapeError {
-                    kind: UnescapeErrorKind::UnexpectedEof,
-                    // EOF occurred 1 byte after '\'.
-                    offset: 1,
-                }));
-            }
-        };
-
-        self.bytes = remainder;
-        Some(Ok(UnescapedChunk {
-            literal,
-            unescaped: Some(unescaped_char),
-        }))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.bytes.is_empty() {
-            (0, Some(0))
-        } else {
-            // Worst-case is \uXXXX -> 1 byte, so 6 -> 1.
-            (
-                self.bytes.len().saturating_add(1) / 6,
-                Some(self.bytes.len()),
-            )
-        }
-    }
-}
-
-impl<'a> FusedIterator for Unescape<'a> {}
-
 impl<'a> Unescape<'a> {
     /// Decodes the unescaped byte stream into a UTF-8 string.
     ///
@@ -551,152 +457,45 @@ impl<'a> Unescape<'a> {
             lossy: true,
         }
     }
-
-    /// Parses a unicode escape sequence `\uXXXX` which may be a surrogate pair.
-    /// The input slice `bytes` must be positioned *after* the `\u`.
-    ///
-    /// On success, returns the parsed `char` and advances the slice.
-    /// On error, returns an `Err` and the input slice is not modified.
-    #[inline(always)]
-    fn handle_unicode_escape(bytes: &mut &'a [u8]) -> Result<char, UnescapeError> {
-        // Parse first 4 hex digits (\uXXXX)
-        //
-        // The slice starts *after* '\u'. The first hex digit is at offset 2 from '\'.
-        let first = Self::parse_hex4(bytes, 2)?;
-
-        // High surrogate → must be followed by another \uXXXX low surrogate
-        if (0xD800..=0xDBFF).contains(&first) {
-            let remaining = &bytes[4..];
-
-            const N: usize = b"\\u".len();
-
-            // EOF before even seeing '\' or 'u' → UnexpectedEof
-            if remaining.len() < N {
-                return Err(UnescapeError {
-                    kind: UnescapeErrorKind::UnexpectedEof,
-                    offset: 6,
-                });
-            }
-
-            // Check for a following `\u` and enough bytes for the second hex sequence.
-            if b"\\u" == &remaining[..N] {
-                // Try parsing the low surrogate. The slice is advanced by 2 for the `\u`.
-                // The first hex digit of the second escape is at offset 8.
-                // (\uXXXX\u -> 8 chars from the initial '\')
-                match Self::parse_hex4(&remaining[2..], 8) {
-                    Ok(low) if (0xDC00..=0xDFFF).contains(&low) => {
-                        // We found a valid low surrogate. Combine them.
-                        let high_t = first as u32;
-                        let low_t = low as u32;
-                        let code = 0x10000 + (((high_t - 0xD800) << 10) | (low_t - 0xDC00));
-                        let result_char = char::from_u32(code)
-                            .expect("valid surrogate pair math should always produce a valid char");
-
-                        // SUCCESS: Advance the original slice past the entire surrogate pair (\uXXXX\uXXXX).
-                        *bytes = &remaining[6..]; // Consumes 4 + 2 + 4 = 10 bytes total from the original slice
-                        return Ok(result_char);
-                    }
-                    Ok(_) => {
-                        // Got a full escape but not a low surrogate → Lone surrogate
-                        return Err(UnescapeError {
-                            kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError {
-                                surrogate: first,
-                            }),
-                            offset: 6,
-                        });
-                    }
-                    Err(err) => {
-                        // parse_hex4 failed for the second part.
-                        return Err(err);
-                    }
-                }
-            } else {
-                // High surrogate was not followed by a `\u` sequence.
-                return Err(UnescapeError {
-                    kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
-                    // The error is detected after consuming `\uXXXX` (6 bytes total from '\').
-                    offset: 6,
-                });
-            }
-        }
-
-        // Not a surrogate → normal path
-        match char::from_u32(first as u32) {
-            Some(c) => {
-                // SUCCESS: Advance the original slice past the 4 hex digits.
-                *bytes = &bytes[4..];
-                Ok(c)
-            }
-            None => Err(UnescapeError {
-                // The parsed value is not a valid char (e.g., a lone low surrogate).
-                kind: UnescapeErrorKind::LoneSurrogate(LoneSurrogateError { surrogate: first }),
-                // The error is detected after consuming `\uXXXX` (6 bytes total from '\').
-                offset: 6,
-            }),
-        }
-    }
-
-    /// Parses 4 hex digits, optimized for the success path.
-    #[inline(always)]
-    fn parse_hex4(slice: &[u8], base_offset: u8) -> Result<u16, UnescapeError> {
-        // --- HOT PATH ---
-        // This is the path we expect to take most of the time.
-        if let Some(chunk) = slice.get(..4) {
-            // By slicing to 4, we've performed a single bounds check.
-            // The compiler now knows any access from chunk[0] to chunk[3] is safe,
-            // so it will not generate additional bounds checks.
-
-            // We can now safely access the bytes.
-            let b0 = chunk[0];
-            let b1 = chunk[1];
-            let b2 = chunk[2];
-            let b3 = chunk[3];
-
-            // Use the LUT to get the values.
-            if let (Some(v0), Some(v1), Some(v2), Some(v3)) = (
-                HEX[b0 as usize],
-                HEX[b1 as usize],
-                HEX[b2 as usize],
-                HEX[b3 as usize],
-            ) {
-                // All characters are valid hex, combine and return.
-                let result = (v0 as u16) << 12 | (v1 as u16) << 8 | (v2 as u16) << 4 | (v3 as u16);
-                return Ok(result);
-            }
-
-            // If we're here, it means the slice was long enough, but one
-            // of the characters was not a valid hex digit. Fall through to the cold path
-            // to correctly identify which character was invalid.
-        }
-
-        // --- COLD PATH ---
-        // This path handles all errors. It's marked as `#[cold]` to hint to the
-        // compiler that it's less frequently executed.
-        #[cold]
-        fn handle_error(slice: &[u8], base_offset: u8) -> UnescapeError {
-            // Loop through the bytes we *do* have.
-            for (i, &b) in slice.iter().enumerate() {
-                if HEX[b as usize].is_none() {
-                    // We found an invalid hex character before running out of bytes.
-                    return UnescapeError {
-                        kind: UnescapeErrorKind::InvalidHex(InvalidHexError { found: b }),
-                        offset: base_offset + i as u8,
-                    };
-                }
-            }
-
-            // If the loop completes, all available characters were valid,
-            // but there weren't enough of them.
-            UnescapeError {
-                kind: UnescapeErrorKind::UnexpectedEof,
-                // The error is at the position of the first *missing* character.
-                offset: base_offset + slice.len() as u8,
-            }
-        }
-
-        Err(handle_error(slice, base_offset))
-    }
 }
+
+impl<'a> Iterator for Unescape<'a> {
+    type Item = Result<UnescapedChunk<'a>, UnescapeError>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.bytes.is_empty() {
+            return None;
+        }
+
+        let (literal, rest) = UnescapeTokens::split_at_escape(self.bytes);
+
+        Some(Ok(UnescapedChunk {
+            literal,
+            unescaped: {
+                if rest.is_empty() {
+                    // there's no remainder, we just have a literal.
+                    self.bytes = rest;
+                    None
+                } else {
+                    // rest starts with '\\'
+                    let mut remainder = &rest[1..];
+                    match UnescapeTokens::handle_escape(&mut remainder) {
+                        Ok(unescaped_char) => {
+                            self.bytes = remainder;
+                            Some(unescaped_char)
+                        }
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+            },
+        }))
+    }
+
+    // TODO: sizehint
+}
+
+impl<'a> FusedIterator for Unescape<'a> {}
 
 impl fmt::Debug for Unescape<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -822,6 +621,8 @@ impl<'a> TryFrom<Unescape<'a>> for Cow<'a, [u8]> {
     /// allocation. Otherwise, returns `Cow::Owned`. If an error occurs, it's
     /// returned immediately.
     fn try_from(mut value: Unescape<'a>) -> Result<Self, Self::Error> {
+        use crate::token::append_char;
+
         match value.next() {
             None => Ok(Cow::Borrowed(b"")),
             Some(Ok(first)) => {
@@ -832,16 +633,6 @@ impl<'a> TryFrom<Unescape<'a>> for Cow<'a, [u8]> {
                     // An escape was processed. Must allocate and collect the rest.
                     let mut buf = Vec::with_capacity(value.bytes.len() + 16);
                     buf.extend_from_slice(first.literal);
-
-                    // Helper to append a char directly to the Vec<u8> buffer.
-                    // This should be more efficient than using an intermediate stack buffer.
-                    let append_char = |buf: &mut Vec<u8>, c: char| {
-                        // Reserve space for the character's bytes and write directly into the buffer.
-                        let char_len = c.len_utf8();
-                        let old_len = buf.len();
-                        buf.resize(old_len + char_len, 0);
-                        c.encode_utf8(&mut buf[old_len..]);
-                    };
 
                     if let Some(c) = first.unescaped {
                         append_char(&mut buf, c);
@@ -886,42 +677,14 @@ impl<'a> fmt::Display for DisplayUnescape<'a> {
     }
 }
 
-// Escape table: maps the byte after '\' to its escaped representation.
-const UNESCAPE_TABLE: [Option<char>; 256] = {
-    let mut tbl: [Option<char>; 256] = [None; 256];
-    tbl[b'"' as usize] = Some('\"');
-    tbl[b'\\' as usize] = Some('\\');
-    tbl[b'/' as usize] = Some('/');
-    tbl[b'b' as usize] = Some('\x08');
-    tbl[b'f' as usize] = Some('\x0C');
-    tbl[b'n' as usize] = Some('\n');
-    tbl[b'r' as usize] = Some('\r');
-    tbl[b't' as usize] = Some('\t');
-    tbl
-};
-
-// --- Look-Up Table for Hex Decoding ---
-const HEX: [Option<u8>; 256] = {
-    let mut table = [None; 256];
-    let mut i = 0;
-    while i < 256 {
-        table[i] = match i as u8 {
-            b'0'..=b'9' => Some(i as u8 - b'0'),
-            b'a'..=b'f' => Some(i as u8 - b'a' + 10),
-            b'A'..=b'F' => Some(i as u8 - b'A' + 10),
-            _ => None,
-        };
-        i += 1;
-    }
-    table
-};
-
 //==============================================================================
 // Iterator Trait Implementations
 //==============================================================================
 
 #[cfg(feature = "alloc")]
 mod iter_traits {
+    use crate::token::append_char;
+
     use super::{EscapedChunk, UnescapedChunk};
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -966,10 +729,7 @@ mod iter_traits {
             iter.into_iter().for_each(move |chunk| {
                 self.extend_from_slice(chunk.literal);
                 if let Some(c) = chunk.unescaped {
-                    let char_len = c.len_utf8();
-                    let old_len = self.len();
-                    self.resize(old_len + char_len, 0);
-                    c.encode_utf8(&mut self[old_len..]);
+                    append_char(self, c)
                 }
             })
         }
