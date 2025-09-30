@@ -199,9 +199,20 @@ impl<'a> EscapeTokens<'a> {
 
         // On x86_64, we can tell the compiler to use SSE2 features in this specific function.
         // This is safe because we've already checked the target architecture.
+        // SAFETY: calling this unsafe function is only safe if the caller ensures:
+        //  - the CPU supports SSE2, and
+        //  - i + LANES <= bytes.len()
         #[target_feature(enable = "sse2")]
         unsafe fn find_in_chunk(bytes: &[u8], i: usize) -> Option<usize> {
+            // Safety check: ensure the 16 bytes we will load are inside the slice.
+            // This is a debug-time assertion to help catch incorrect call.
+            debug_assert!(
+                i + LANES <= bytes.len(),
+                "find_in_chunk: attempted to load past end of slice"
+            );
+
             // Load 16 bytes of data from the slice.
+            // SAFETY: caller must guarantee `i + LANES <= bytes.len()`. We assert that above.
             let chunk = unsafe { _mm_loadu_si128(bytes.as_ptr().add(i) as *const _) };
 
             // Create comparison vectors for quote and slash.
@@ -239,12 +250,23 @@ impl<'a> EscapeTokens<'a> {
                 None
             }
         }
-        // Main loop
-        while i + LANES <= bytes.len() {
-            if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
-                return Some(result);
+
+        // Runtime feature check: only call the SSE2-targeted function when the CPU supports it.
+        // This avoids undefined behaviour on CPUs without SSE2 even if the function was compiled.
+        if std::is_x86_feature_detected!("sse2") {
+            // Main loop (vectorized)
+            while i + LANES <= bytes.len() {
+                // Safety: calling `find_in_chunk` is safe here because:
+                //  - we've checked CPU supports SSE2 via is_x86_feature_detected!
+                //  - loop condition ensures `i + LANES <= bytes.len()`, matching the debug_assert in the function.
+                if let Some(result) = unsafe { find_in_chunk(bytes, i) } {
+                    return Some(result);
+                }
+                i += LANES;
             }
-            i += LANES;
+        } else {
+            // CPU doesn't support SSE2: fall through to scalar path below.
+            // (We intentionally do not attempt to call the sse2 function.)
         }
 
         // Handle the remainder with the fast scalar lookup.
