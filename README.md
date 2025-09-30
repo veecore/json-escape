@@ -137,7 +137,7 @@ For advanced use cases, the `token` and `explicit` modules provide more granular
 
 ## Examples
 
-You can find complete, runnable examples in the `examples/` directory of the project repository. These are great for copy-pasting and learning how to use the library in different scenarios:
+You can find complete, runnable examples in the [`examples/`](examples) directory of the project repository. These are great for copy-pasting and learning how to use the library in different scenarios:
 
   - `simple_unescape.rs`: Basic usage of the high-level `unescape` iterator.
   - `stream_file.rs`: A practical example of using `UnescapeStream` to read and process a file.
