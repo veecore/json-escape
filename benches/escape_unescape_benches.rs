@@ -292,7 +292,7 @@ fn unescape_streaming_benchmarks(c: &mut Criterion) {
 
         data
     }
-    
+
     // --- Benchmark Loop ---
     // Iterate over different types of input data.
     for (id, base_str) in [
