@@ -1,4 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use json_escape::stream::UnescapeStream;
+use json_escape::token::UnescapedToken;
 use json_escape::{escape_str, explicit, token, unescape, unescape_quoted};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -262,6 +264,108 @@ fn unescape_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmarks the streaming unescaper against a traditional "buffer-then-process" approach.
+fn unescape_streaming_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Unescape Stream vs Buffer");
+
+    // --- Configuration ---
+    const TOTAL_SIZE: usize = 1024 * 1024; // 1 MiB total data
+    const CHUNK_SIZES: &[usize] = &[64, 1024, 16 * 1024]; // 64B, 1KiB, 16KiB chunks
+
+    /// Helper to generate a large Vec<u8> by repeating a base string pattern.
+    /// This version ensures that only whole copies of the base pattern are appended,
+    /// preventing the data from ending in an incomplete escape sequence.
+    /// Thus it might not be exactly 'size' big but never more than.
+    fn generate_data(base: &str, size: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(size);
+        let base_bytes = base.as_bytes();
+
+        // This check is important for very small base strings to avoid an infinite loop.
+        if base_bytes.is_empty() {
+            return data;
+        }
+
+        // Only append whole copies of the base string.
+        while data.len() + base_bytes.len() <= size {
+            data.extend_from_slice(base_bytes);
+        }
+
+        data
+    }
+    
+    // --- Benchmark Loop ---
+    // Iterate over different types of input data.
+    for (id, base_str) in [
+        ("NoEscapes", NO_ESCAPES),
+        ("SparseEscapes", SPARSE_ESCAPES),
+        ("DenseEscapes", DENSE_ESCAPES),
+        ("UnicodeEscapes", UNICODE_ESCAPES_ESCAPED),
+    ]
+    .iter()
+    {
+        let source_data = generate_data(base_str, TOTAL_SIZE);
+
+        // Iterate over different chunk sizes for the simulated stream.
+        for &chunk_size in CHUNK_SIZES {
+            let bench_id = format!("{}/{}B_chunks", id, chunk_size);
+
+            // --- 1. Streaming API Benchmark ---
+            // Processes chunks as they "arrive" in a single pass.
+            group.bench_with_input(
+                BenchmarkId::new("Streaming", &bench_id),
+                &(source_data.clone(), chunk_size),
+                |b, (data, cs)| {
+                    b.iter(|| {
+                        let mut stream = UnescapeStream::new();
+                        // Pre-allocate output to focus on unescaping, not output allocation.
+                        let mut output = String::with_capacity(TOTAL_SIZE);
+
+                        for chunk in data.chunks(*cs) {
+                            let (boundary, iter) = stream.try_unescape_next(chunk).unwrap();
+                            if let Some(c) = boundary {
+                                output.push(c);
+                            }
+                            for token in iter {
+                                match token.unwrap() {
+                                    UnescapedToken::Unescaped(c) => output.push(c),
+                                    UnescapedToken::Literal(s) => {
+                                        // SAFETY: read part of chunk is valid utf8
+                                        output.push_str(unsafe { str::from_utf8_unchecked(s) })
+                                    }
+                                }
+                            }
+                        }
+                        stream.finish().unwrap();
+                        black_box(output);
+                    });
+                },
+            );
+
+            // --- 2. Buffering (Alternative) Benchmark ---
+            // First pass: collect all chunks. Second pass: unescape.
+            group.bench_with_input(
+                BenchmarkId::new("Buffering", &bench_id),
+                &(source_data.clone(), chunk_size),
+                |b, (data, cs)| {
+                    b.iter(|| {
+                        // Step 1: Collect all chunks into a single, large buffer.
+                        let mut full_buffer = Vec::with_capacity(TOTAL_SIZE);
+                        for chunk in data.chunks(*cs) {
+                            full_buffer.extend_from_slice(chunk);
+                        }
+
+                        // Step 2: Unescape the complete buffer using the base API.
+                        let result = unescape(&full_buffer).decode_utf8().unwrap();
+                        black_box(result);
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 // --- Structs for the Nested JSON Benchmark ---
 
 // Represents the outer JSON object containing the escaped string.
@@ -417,6 +521,7 @@ criterion_group!(
     benchmark_find_escape_char,
     escape_benchmarks,
     unescape_benchmarks,
+    unescape_streaming_benchmarks,
     nested_json_benchmarks,
     comparison_benchmarks
 );

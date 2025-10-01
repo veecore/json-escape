@@ -9,8 +9,8 @@ fn main() {
     // Escape using tokens
     let escaped: String = escape_str(raw)
         .map(|tok| match tok {
-            EscapedToken::Literal(s) => s.to_owned(),
-            EscapedToken::Escaped(e) => e.to_owned(),
+            EscapedToken::Literal(s) => s,
+            EscapedToken::Escaped(e) => e,
         })
         .collect();
 

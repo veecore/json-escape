@@ -4,9 +4,13 @@ use json_escape::stream::ReadChunkSource;
 use json_escape::{stream::UnescapeStream, token::UnescapedToken};
 use std::fs::File;
 use std::io;
+use std::path::PathBuf;
 
 fn main() -> io::Result<()> {
-    let file = File::open("tests/data/escaped.txt")?;
+    let file_path = get_file_path();
+
+    let file = File::open(file_path)
+        .expect("Failed to open tests/data/escaped.txt. Make sure the file exists.");
     let mut result = String::new();
     let buf = [0u8; 8]; // streaming buffer
 
@@ -29,4 +33,11 @@ fn main() -> io::Result<()> {
 
     println!("Driver stream unescaped:\n{}", result);
     Ok(())
+}
+
+fn get_file_path() -> PathBuf {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let mut file_path = PathBuf::from(manifest_dir);
+    file_path.push("tests/data/escaped.txt");
+    file_path
 }

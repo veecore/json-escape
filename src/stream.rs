@@ -306,6 +306,7 @@ impl UnescapeStream {
     /// - [`UnescapeFnError::Unescape`] if the JSON string is malformed (e.g., an
     ///   invalid escape sequence or incomplete data at the end of the stream).
     /// - [`UnescapeFnError::Dst`] if the `dst` function returns an error.
+    #[inline]
     pub fn unescape_from_fn<Src, Dst, SrcError, DstError, B>(
         self,
         src: Src,
@@ -343,6 +344,7 @@ impl UnescapeStream {
     /// - `UnescapeFnError::Src`: An error from the source (`src`).
     /// - `UnescapeFnError::Unescape`: The data is malformed (e.g., an invalid escape sequence).
     /// - `UnescapeFnError::Dst`: An error from the destination (`dst`).
+    #[inline]
     pub fn unescape_from_source<Src, Dst, SrcError, DstError>(
         mut self,
         mut src: Src,
@@ -613,6 +615,7 @@ where
     where
         Self: 'a;
 
+    #[inline(always)]
     fn next_chunk<'a>(&'a mut self) -> Option<Result<Self::Chunk<'a>, Self::Error>> {
         (self.closure)()
     }

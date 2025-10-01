@@ -3,11 +3,15 @@
 use json_escape::{stream::UnescapeStream, token::UnescapedToken};
 use std::fs::File;
 use std::io::{self, Read};
+use std::path::PathBuf;
 
 fn main() -> io::Result<()> {
+    let file_path = get_file_path();
+
     // Example input file: contains escaped JSON string like
     //   "Hello, \\\"stream\\\"! \\uD83D\\uDE00 Goodbye!"
-    let mut file = File::open("tests/data/escaped.txt")?;
+    let mut file = File::open(file_path)
+        .expect("Failed to open tests/data/escaped.txt. Make sure the file exists.");
 
     let mut unescaper = UnescapeStream::new();
     let mut result = String::new();
@@ -42,4 +46,11 @@ fn main() -> io::Result<()> {
 
     println!("Unescaped file content:\n{}", result);
     Ok(())
+}
+
+fn get_file_path() -> PathBuf {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let mut file_path = PathBuf::from(manifest_dir);
+    file_path.push("tests/data/escaped.txt");
+    file_path
 }

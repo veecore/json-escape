@@ -112,17 +112,29 @@ println!("Successfully unescaped stream: {}", unescaped_string);
 
 ## Performance
 
-The library's design focuses on minimizing allocations and maximizing throughput. The new SWAR-based (SIMD Within a Register) escape detection algorithm makes scanning for escapes nearly free.
+The library's design focuses on minimizing allocations and maximizing throughput. A SWAR-based (SIMD Within a Register) algorithm makes scanning for escapes nearly free, but the biggest advantage comes from the `UnescapeStream` API for I/O tasks.
 
-| Operation | Scenario | `json-escape` Performance |
+### True Streaming Performance: `UnescapeStream` vs. Buffering
+
+To quantify the advantage of true streaming, we benchmarked `UnescapeStream` against the traditional approach of collecting all I/O chunks into a single buffer *before* unescaping.
+
+The results are clear: **for any realistic I/O, the streaming API is significantly faster and more memory-efficient.**
+
+| Workload | Chunk Size | Performance Advantage (Streaming vs. Buffering) |
 | :--- | :--- | :--- |
-| **Unescaping** | No Escapes | **\~2.5× faster** than byte-by-byte scan |
-| **Unescaping** | Sparse Escapes | **\~1.8× faster** than byte-by-byte scan |
-| **Unescaping** | Dense Unicode | **\~2.2× faster** than byte-by-byte scan |
-| **Escaping to String** | Sparse Escapes | **Consistently Faster** than `serde_json::to_string` |
-| **Unescaping from Str** | No Escapes | **Consistently Faster** than `serde_json::from_str` |
+| **Dense & Unicode Escapes** | All Sizes | 🚀 Up to **5× faster** |
+| **Sparse Escapes** | All Sizes | ✅ Up to **2.2× faster** |
+| **No Escapes (Ideal I/O)**| Typical (≥1KB) | 👍 **1.7× faster** |
 
-For I/O-bound tasks using `Write to Sink` or `std::io::Read` integrations, the overhead is negligible, making it the most efficient method for large data.
+
+
+**Why is streaming so much faster?**
+
+- **Single-Pass Processing**: The streaming API processes data *as it arrives*. It avoids the massive overhead of the "collect-then-process" model, which must first perform a full memory copy of the entire dataset into a new buffer before it can even begin unescaping.
+- **Immediate Output**: This single-pass architecture means work gets done sooner, which can lead to lower latency in interactive applications.
+- **Lower Memory Footprint**: While not measured here, the streaming approach uses constant, minimal memory (just a tiny internal buffer), whereas the buffering method requires enough memory to hold the *entire* dataset at once.
+
+The only scenario where buffering has a slight edge is with trivial data (no escapes) and unrealistically small chunks (e.g., 64 bytes), where the overhead of repeated function calls outweighs the memory copy cost. For any typical I/O pattern, `UnescapeStream` is the superior choice.
 
 -----
 

@@ -50,6 +50,10 @@ name = "stream_file"
 path = "examples/stream_file.rs"
 
 [[example]]
+name = "stream_file_fn"
+path = "examples/stream_file_fn.rs"
+
+[[example]]
 name = "zero_copy_serde"
 path = "examples/zero_copy_serde.rs"
 
